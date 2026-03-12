@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rica"
+version = "0.1.0"
+description = "Runtime Intelligent Coding Assistant — autonomous coding agent for ALARA"
+requires-python = ">=3.11"
+dependencies = [
+    "google-genai>=1.0.0",
+    "loguru>=0.7.0",
+    "pydantic>=2.0.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+rica = "rica.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["rica*"]
