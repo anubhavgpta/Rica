@@ -1,5 +1,6 @@
 import uuid
 import re
+from pathlib import Path
 from loguru import logger
 from rica.planner import RicaPlanner
 from rica.codegen import RicaCodegen
@@ -8,6 +9,7 @@ from rica.debugger import RicaDebugger
 from rica.workspace import WorkspaceMemory
 from rica.result import RicaResult
 from rica.utils.paths import ensure_workspace
+from rica.reader import CodebaseReader
 
 MAX_ITERATIONS = 5
 
@@ -32,10 +34,13 @@ class RicaAgent:
         self.planner = RicaPlanner(config)
         self.codegen = RicaCodegen(config)
         self.debugger = RicaDebugger(config)
+        self.client = None  # Will be set when needed
+        self.model = config.get("model", "gemini-2.5-flash")
 
     def run(
         self,
         goal: str,
+        project_dir: str = None,
         workspace_name: str | None = None,
     ) -> RicaResult:
         """
@@ -58,9 +63,41 @@ class RicaAgent:
         workspace_dir = str(
             ensure_workspace(ws_name)
         )
+        
+        # Resolve project_dir
+        if project_dir and Path(project_dir).exists():
+            self.project_dir = str(
+                Path(project_dir).resolve()
+            )
+        else:
+            self.project_dir = workspace_dir
+        
+        # Initialize client for reader
+        import google.genai as genai
+        self.client = genai.Client(api_key=self.config["api_key"])
+        
+        # Create codebase snapshot
+        reader = CodebaseReader()
+        snapshot = reader.snapshot(
+            self.project_dir,
+            goal,
+            self.client,
+            self.model,
+        )
+        logger.info(
+            f"[rica] Codebase: {len(snapshot.files)}"
+            f" files read, is_empty={snapshot.is_empty}"
+        )
+        
+        # Store snapshot for use in _run_task
+        self.snapshot = snapshot
+        
         memory = WorkspaceMemory(
             goal=goal,
             workspace_dir=workspace_dir,
+            project_dir=self.project_dir,
+            snapshot_summary=snapshot.summary,
+            files_read=len(snapshot.files)
         )
 
         logger.info(
@@ -69,9 +106,13 @@ class RicaAgent:
         logger.info(
             f"[rica] Workspace: {workspace_dir}"
         )
+        if self.project_dir != workspace_dir:
+            logger.info(
+                f"[rica] Project: {self.project_dir}"
+            )
 
         try:
-            tasks = self.planner.plan(goal)
+            tasks = self.planner.plan(goal, snapshot)
             logger.info(
                 f"[rica] Planned "
                 f"{len(tasks)} tasks"
@@ -80,7 +121,7 @@ class RicaAgent:
             for task in tasks:
                 memory.iteration += 1
                 self._run_task(
-                    task, memory, workspace_dir
+                    task, memory, workspace_dir, snapshot
                 )
 
             logger.info(
@@ -109,11 +150,51 @@ class RicaAgent:
                 iterations=memory.iteration,
             )
 
+    def _should_skip_execution(
+        self,
+        command: str,
+    ) -> bool:
+        """Skip running module files with
+        no __main__ entry point."""
+        import re
+        from pathlib import Path
+        
+        match = re.search(
+            r'python\s+"?([^\s"]+\.py)"?',
+            command,
+            re.IGNORECASE
+        )
+        if not match:
+            return False
+        
+        filepath = match.group(1)
+        fname = Path(filepath).name
+        
+        # Check snapshot files for __main__
+        if self.snapshot and \
+                not self.snapshot.is_empty:
+            for rel_path, content in \
+                    self.snapshot.files.items():
+                if Path(rel_path).name == fname:
+                    has_main = (
+                        '__main__' in content
+                        or 'if __name__' in content
+                    )
+                    if not has_main:
+                        logger.info(
+                            f"[rica] Skipping exec"
+                            f" of module (no __main__)"
+                            f": {fname}"
+                        )
+                        return True
+        return False
+
     def _run_task(
         self,
         task: dict,
         memory: WorkspaceMemory,
         workspace_dir: str,
+        snapshot,
     ) -> None:
         """
         Runs a single task through the
@@ -124,12 +205,12 @@ class RicaAgent:
             f"{task['description'][:60]}"
         )
 
-        executor = RicaExecutor(workspace_dir)
+        # Use project_dir as cwd for file-modifying commands
+        executor = RicaExecutor(self.project_dir)
 
         # Step 1: Generate code
         files = self.codegen.generate(
-            task, workspace_dir,
-            context=memory.summary()
+            task, snapshot, workspace_dir, self.project_dir
         )
         for f in files:
             memory.record_file(f, created=True)
@@ -153,7 +234,21 @@ class RicaAgent:
                 original_cmd = f"python {rel}"
 
             cmd_to_run = original_cmd
-            result = executor.run(cmd_to_run)
+            
+            # Skip execution for non-entry point files
+            if self._should_skip_execution(cmd_to_run):
+                result = {
+                    "stdout": (
+                        f"Skipped execution of module"
+                        f" file (no __main__): {cmd_to_run}"
+                    ),
+                    "stderr": "",
+                    "exit_code": 0,
+                    "success": True,
+                }
+            else:
+                result = executor.run(cmd_to_run)
+            
             logger.info(
                 f"[rica] Executed: {cmd_to_run} → "
                 f"exit={result['exit_code']}"
@@ -189,7 +284,7 @@ class RicaAgent:
                         pass
 
                 fix_result = self.debugger.analyze(
-                    error, code_context
+                    error, task, snapshot
                 )
                 
                 # Extract fix text and revised command
@@ -213,8 +308,7 @@ class RicaAgent:
                     "type": "fix",
                 }
                 new_files = self.codegen.generate(
-                    fix_task, workspace_dir,
-                    context=memory.summary()
+                    fix_task, snapshot, workspace_dir, self.project_dir
                 )
                 for f in new_files:
                     memory.record_file(

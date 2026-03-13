@@ -5,6 +5,9 @@ from dataclasses import dataclass, field
 class WorkspaceMemory:
     goal: str
     workspace_dir: str
+    project_dir: str = None
+    snapshot_summary: str = ""
+    files_read: int = 0
     files_created: list[str] = field(
         default_factory=list
     )
@@ -41,7 +44,7 @@ class WorkspaceMemory:
             self.errors_seen.append(error)
 
     def summary(self) -> str:
-        return (
+        summary = (
             f"Goal: {self.goal}\n"
             f"Iteration: {self.iteration}\n"
             f"Files created: "
@@ -51,3 +54,10 @@ class WorkspaceMemory:
             f"Errors seen: "
             f"{len(self.errors_seen)}"
         )
+        if self.project_dir:
+            summary += f"\nProject: {self.project_dir}"
+        if self.snapshot_summary:
+            summary += f"\nCodebase: {self.snapshot_summary}"
+        if self.files_read > 0:
+            summary += f"\nFiles read: {self.files_read}"
+        return summary

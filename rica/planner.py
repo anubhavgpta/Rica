@@ -28,7 +28,7 @@ class RicaPlanner:
         # Fallback: return original text
         return text.strip()
 
-    def plan(self, goal: str) -> list[dict]:
+    def plan(self, goal: str, snapshot = None) -> list[dict]:
         """
         Returns list of subtask dicts.
         Calls Gemini to decompose the goal into 2-6 ordered subtasks.
@@ -37,9 +37,17 @@ class RicaPlanner:
             f"[planner] Planning: {goal[:60]}"
         )
         
-        prompt = f"""You are a coding task planner.
+        # Prepare context from snapshot
+        if snapshot and not snapshot.is_empty:
+            context = snapshot.format_for_prompt()
+        else:
+            context = "Starting a fresh project."
+        
+        prompt = f"""{context}
+
 Goal: {goal}
 
+You are a coding task planner.
 Break this into 2-6 ordered subtasks.
 Each task must be concrete and actionable.
 
@@ -66,6 +74,12 @@ Rules:
   - Do NOT plan tasks that start a server (flask run, uvicorn, etc).
   - To install from requirements.txt, always use `pip install -r requirements.txt`, never `python requirements.txt`.
   - To install a single package, use `pip install <package>`.
+  - When modifying existing files, reference their actual paths from the codebase above.
+  - Do not recreate files that already exist unless the goal requires replacing them.
+  - Do NOT plan a task to "run" or "execute" a file that is a module/utility (e.g. utils/paths.py, helpers.py, models.py, src/utils/*.py, lib/*.py). Only plan execution for scripts that have a meaningful __main__ block or are entry points.
+  - Do NOT plan a task to "verify" a file was written by running it. Verification of file contents should be done by reading the file, not executing it. This applies to ALL files, especially module/utility files like utils/paths.py, helpers.py, models.py, etc.
+  - Do NOT plan any task that involves reading, checking, or verifying the contents of a file by executing it. File content verification should only involve reading operations, not execution.
+  - When testing a CLI app that requires arguments, always include the arguments in the run command. Never plan to run a CLI script bare (python script.py) if it requires args to do anything useful.
 - No explanations, no markdown, JSON only"""
 
         # Try 3 times to get valid JSON
@@ -87,8 +101,19 @@ Rules:
                     "type" in task
                     for task in tasks
                 ):
-                    logger.info(f"[planner] Generated {len(tasks)} tasks")
-                    return tasks
+                    # Filter out verification tasks for module files
+                    filtered_tasks = []
+                    for task in tasks:
+                        desc = task.get('description', '').lower()
+                        if ('verify' in desc or 'check' in desc or 'confirm' in desc) and \
+                           ('utils/paths.py' in desc or 'utils\\paths.py' in desc or 
+                            'module' in desc or 'content' in desc):
+                            logger.info(f"[planner] Filtered out verification task: {task.get('description', '')[:50]}")
+                            continue
+                        filtered_tasks.append(task)
+                    
+                    logger.info(f"[planner] Generated {len(filtered_tasks)} tasks (filtered from {len(tasks)})")
+                    return filtered_tasks
                     
             except Exception as e:
                 logger.warning(f"[planner] Attempt {attempt + 1} failed: {e}")

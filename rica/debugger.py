@@ -14,7 +14,8 @@ class RicaDebugger:
     def analyze(
         self,
         error: str,
-        code_context: str = ""
+        task: dict,
+        snapshot = None,
     ) -> dict | str:
         """
         Returns a dict with fix description and optional revised command.
@@ -25,13 +26,20 @@ class RicaDebugger:
             f"{error[:80]}"
         )
         
+        # Prepare context from snapshot
+        if snapshot and not snapshot.is_empty:
+            context = f"Codebase summary: {snapshot.summary}"
+        else:
+            context = ""
+        
         prompt = f"""You are a debugging expert.
 
 Error:
 {error}
 
-Code context:
-{code_context}
+Task: {task.get('description', '')}
+
+{context}
 
 Analyze this error and provide a specific,
 actionable fix instruction. If the error is related

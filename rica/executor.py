@@ -27,6 +27,16 @@ class RicaExecutor:
         'sudo ',
     ]
 
+    USAGE_PATTERNS = [
+        'usage:',
+        'usage error',
+        'positional arguments',
+        'optional arguments',
+        'options:',
+        'error: the following arguments',
+        'try --help',
+    ]
+
     def __init__(self, workspace_dir: str):
         self.workspace_dir = workspace_dir
 
@@ -44,6 +54,17 @@ class RicaExecutor:
         return any(
             lower.startswith(s)
             for s in self.SHELL_ONLY_COMMANDS
+        )
+
+    def _is_usage_output(
+        self, stdout: str, stderr: str
+    ) -> bool:
+        combined = (
+            (stdout or '') + (stderr or '')
+        ).lower()
+        return any(
+            p in combined
+            for p in self.USAGE_PATTERNS
         )
 
     def run(
@@ -101,11 +122,26 @@ class RicaExecutor:
                 timeout=60,
             )
             
+            # Check for usage output vs real errors
+            exit_code = result.returncode
+            stdout = result.stdout
+            stderr = result.stderr
+            success = result.returncode == 0
+            
+            if exit_code != 0 and self._is_usage_output(stdout, stderr):
+                # This is usage/help output, not a real failure
+                exit_code = 0
+                success = True
+                stdout = stdout + "\n[note: script requires arguments — called without args]"
+                logger.info(
+                    f"[executor] Usage output detected for: {command}"
+                )
+            
             return {
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "exit_code": result.returncode,
-                "success": result.returncode == 0,
+                "stdout": stdout,
+                "stderr": stderr,
+                "exit_code": exit_code,
+                "success": success,
             }
             
         except subprocess.TimeoutExpired:

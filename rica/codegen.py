@@ -43,7 +43,9 @@ class RicaCodegen:
     def generate(
         self,
         task: dict,
-        workspace_dir: str,
+        snapshot = None,
+        workspace_dir: str = None,
+        project_dir: str = None,
         context: str = ""
     ) -> list[str]:
         """
@@ -55,11 +57,16 @@ class RicaCodegen:
             f"{task['description'][:60]}"
         )
         
-        prompt = f"""You are an expert software engineer.
+        # Prepare context from snapshot
+        if snapshot and not snapshot.is_empty:
+            context = snapshot.format_for_prompt()
+        else:
+            context = ""
+        
+        prompt = f"""{context}
 
 Task: {task['description']}
 Workspace: {workspace_dir}
-Context: {context}
 
 Generate the complete code for this task.
 
@@ -95,6 +102,20 @@ Rules:
             # Sanitize path to prevent traversal
             safe_path = sanitize_path(relative_path, workspace_dir)
             
+            # Determine target directory
+            from pathlib import Path
+            target_dir = workspace_dir  # default
+            
+            if project_dir and snapshot:
+                # Check if this file exists in snapshot (meaning it's an edit, not a new file)
+                normalized_safe = safe_path.replace('\\', '/')
+                snapshot_files_normalized = {k.replace('\\', '/') for k in snapshot.files}
+                if normalized_safe in snapshot_files_normalized:
+                    target_dir = project_dir
+                    logger.info(
+                        f"[codegen] Writing to project: {safe_path}"
+                    )
+            
             # Extract file content (everything after FILE: line)
             content = '\n'.join(lines[1:]).strip()
             if not content:
@@ -102,7 +123,7 @@ Rules:
                 return []
             
             # Create full path and ensure parent directories exist
-            full_path = Path(workspace_dir) / safe_path
+            full_path = Path(target_dir) / safe_path
             full_path.parent.mkdir(parents=True, exist_ok=True)
             
             # Write the file
