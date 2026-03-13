@@ -1,5 +1,8 @@
-import json
+import os
 import re
+import json
+import time
+import random
 from loguru import logger
 import google.genai as genai
 
@@ -84,8 +87,9 @@ Rules:
 - Only use FILE: format when: creating a brand new file, or the task requires rewriting the entire file structure.
 - No explanations, no markdown, JSON only"""
 
-        # Try 3 times to get valid JSON
-        for attempt in range(3):
+        # Try 3 times to get valid JSON with exponential backoff
+        MAX_ATTEMPTS = 3
+        for attempt in range(MAX_ATTEMPTS):
             try:
                 response = self.client.models.generate_content(
                     model=self.config["model"],
@@ -118,13 +122,36 @@ Rules:
                     return filtered_tasks
                     
             except Exception as e:
-                logger.warning(f"[planner] Attempt {attempt + 1} failed: {e}")
-                continue
+                logger.warning(
+                    f"[planner] Attempt {attempt+1}"
+                    f" failed: {e}"
+                )
+                if attempt < MAX_ATTEMPTS - 1:
+                    wait = (2 ** attempt) + random.uniform(0, 1)
+                    logger.info(
+                        f"[planner] Retrying in"
+                        f" {wait:.1f}s..."
+                    )
+                    time.sleep(wait)
         
-        # Fallback: return single task
+        # Fallback: return single task with intelligent type detection
         logger.warning("[planner] All attempts failed, using fallback")
+        
+        EXECUTE_KEYWORDS = [
+            'build', 'run', 'create', 'make',
+            'generate', 'start', 'launch',
+        ]
+        
+        goal_lower = goal.lower()
+        fallback_type = (
+            'generate'
+            if any(k in goal_lower
+                   for k in EXECUTE_KEYWORDS)
+            else 'edit'
+        )
+        
         return [{
             "id": 1,
             "description": goal,
-            "type": "codegen",
+            "type": fallback_type,
         }]

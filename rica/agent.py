@@ -10,8 +10,10 @@ from rica.workspace import WorkspaceMemory
 from rica.result import RicaResult
 from rica.utils.paths import ensure_workspace
 from rica.reader import CodebaseReader
+from rica.testrunner import TestRunner
 
 MAX_ITERATIONS = 5
+MAX_TEST_ITERATIONS = 3
 
 class RicaAgent:
     """
@@ -128,6 +130,122 @@ class RicaAgent:
                 f"[rica] Completed: "
                 f"{memory.summary()}"
             )
+            
+            # --- Test runner phase ---
+            # Only runs if:
+            #   - real project (not workspace-only)
+            #   - files were written to project
+            #   - tests exist
+            
+            if (
+                self.project_dir != workspace_dir
+                and len(memory.files_created) > 0
+            ):
+                runner = TestRunner(self.project_dir)
+                test_files = runner.find_tests(snapshot)
+
+                if test_files:
+                    logger.info(
+                        f"[rica] Found {len(test_files)}"
+                        f" test file(s), running pytest"
+                    )
+                    test_result = runner.run()
+
+                    test_iteration = 0
+                    while (
+                        not test_result['success']
+                        and test_iteration
+                            < MAX_TEST_ITERATIONS
+                    ):
+                        test_iteration += 1
+                        memory.iteration += 1
+
+                        logger.warning(
+                            f"[rica] Tests failed"
+                            f" (attempt {test_iteration})"
+                            f": {test_result['summary']}"
+                        )
+                        memory.record_error(
+                            test_result['output']
+                        )
+
+                        # Ask debugger to analyze
+                        # test failures
+                        fix_result = self.debugger.analyze(
+                            test_result['output'],
+                            {
+                                'id': 'test_fix',
+                                'description': (
+                                    'Fix failing tests'
+                                ),
+                                'type': 'test_fix',
+                            },
+                            snapshot,
+                        )
+
+                        if isinstance(fix_result, dict):
+                            fix_text = fix_result.get(
+                                'fix', ''
+                            )
+                        else:
+                            fix_text = fix_result
+
+                        # Re-generate fix
+                        fix_task = {
+                            'id': 'test_fix',
+                            'description': (
+                                f"Fix failing tests. "
+                                f"{fix_text}"
+                            ),
+                            'type': 'fix',
+                        }
+                        new_files = self.codegen.generate(
+                            fix_task,
+                            snapshot,
+                            workspace_dir,
+                            self.project_dir,
+                        )
+                        for f in new_files:
+                            memory.record_file(
+                                f, created=False
+                            )
+
+                        # Re-run tests
+                        test_result = runner.run()
+
+                    if test_result['success']:
+                        logger.info(
+                            f"[rica] Tests green after"
+                            f" {test_iteration} fix(es):"
+                            f" {test_result['summary']}"
+                        )
+                    else:
+                        # Bail and report
+                        logger.error(
+                            f"[rica] Tests still failing"
+                            f" after {MAX_TEST_ITERATIONS}"
+                            f" attempts. Bailing."
+                        )
+                    return RicaResult(
+                        success=False,
+                        goal=goal,
+                        workspace_dir=workspace_dir,
+                        files_created=memory.files_created,
+                        files_modified=memory.files_modified,
+                        error=(
+                            f"Tests failed after"
+                            f" {MAX_TEST_ITERATIONS}"
+                            f" fix attempts:\n"
+                            f"{test_result['output']}"
+                        ),
+                        iterations=memory.iteration,
+                    )
+            else:
+                logger.debug(
+                    "[rica] No test files found,"
+                    " skipping test runner"
+                )
+            
             return RicaResult(
                 success=True,
                 goal=goal,
@@ -228,10 +346,10 @@ class RicaAgent:
             original_cmd = task.get('command', '')
             if not original_cmd:
                 # Infer: python <first_file>
-                rel = files[0].replace(
-                    workspace_dir, ''
-                ).lstrip('/\\')
-                original_cmd = f"python {rel}"
+                from pathlib import Path
+                file_path = Path(files[0])
+                rel_path = str(file_path.relative_to(workspace_dir))
+                original_cmd = f"python {rel_path}"
 
             cmd_to_run = original_cmd
             
