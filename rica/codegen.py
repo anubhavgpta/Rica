@@ -17,6 +17,13 @@ def sanitize_path(relative_path: str, workspace_dir: str) -> str:
     """
     parsed_path = Path(relative_path)
     
+    # Fix A: Strip leading workspace name to prevent nested subdirectories
+    workspace_name = Path(workspace_dir).name
+    parts = parsed_path.parts
+    if parts and parts[0] == workspace_name:
+        relative_path = str(Path(*parts[1:]))
+        parsed_path = Path(relative_path)
+    
     # If path is absolute AND outside workspace, use only filename
     if parsed_path.is_absolute() or '..' in parsed_path.parts:
         return parsed_path.name

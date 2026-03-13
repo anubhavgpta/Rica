@@ -19,6 +19,14 @@ class RicaExecutor:
         'fastapi run',
     ]
 
+    SHELL_ONLY_COMMANDS = [
+        'source ',
+        'export ',
+        'chmod ',
+        'chown ',
+        'sudo ',
+    ]
+
     def __init__(self, workspace_dir: str):
         self.workspace_dir = workspace_dir
 
@@ -29,6 +37,13 @@ class RicaExecutor:
         return any(
             s in lower
             for s in self.SERVER_COMMANDS
+        )
+
+    def _is_shell_only(self, cmd: str) -> bool:
+        lower = cmd.lower().strip()
+        return any(
+            lower.startswith(s)
+            for s in self.SHELL_ONLY_COMMANDS
         )
 
     def run(
@@ -55,6 +70,21 @@ class RicaExecutor:
                     f"Server command '{command}' "
                     f"recognized — skipping live "
                     f"execution in agentic context."
+                ),
+                "stderr": "",
+                "exit_code": 0,
+                "success": True,
+            }
+        
+        # Check for shell-only commands that don't work on Windows
+        if self._is_shell_only(command):
+            logger.info(
+                f"[executor] Non-Windows command detected "
+                f"— skipping execution: {command}"
+            )
+            return {
+                "stdout": (
+                    f"Skipped non-Windows command: {command}"
                 ),
                 "stderr": "",
                 "exit_code": 0,

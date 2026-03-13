@@ -1,4 +1,5 @@
 import uuid
+import re
 from loguru import logger
 from rica.planner import RicaPlanner
 from rica.codegen import RicaCodegen
@@ -42,6 +43,15 @@ class RicaAgent:
         plan → generate → execute → debug loop.
         Returns a RicaResult.
         """
+        # Fix B: Sanitize workspace name if provided to remove special characters
+        if workspace_name:
+            # Apply the same sanitization logic as specified
+            slug = re.sub(
+                r"[^a-zA-Z0-9_\-]", "", 
+                workspace_name[:50].lower().replace(' ', '_')
+            )[:35]
+            workspace_name = slug
+        
         ws_name = workspace_name or (
             f"rica_{uuid.uuid4().hex[:8]}"
         )
@@ -134,17 +144,18 @@ class RicaAgent:
         # Step 2: If task type is execute or test,
         # run the command
         if task['type'] in ('execute', 'test'):
-            cmd = task.get('command', '')
-            if not cmd:
+            original_cmd = task.get('command', '')
+            if not original_cmd:
                 # Infer: python <first_file>
                 rel = files[0].replace(
                     workspace_dir, ''
                 ).lstrip('/\\')
-                cmd = f"python {rel}"
+                original_cmd = f"python {rel}"
 
-            result = executor.run(cmd)
+            cmd_to_run = original_cmd
+            result = executor.run(cmd_to_run)
             logger.info(
-                f"[rica] Executed: {cmd} → "
+                f"[rica] Executed: {cmd_to_run} → "
                 f"exit={result['exit_code']}"
             )
 
@@ -177,16 +188,27 @@ class RicaAgent:
                     except Exception:
                         pass
 
-                fix_prompt = self.debugger.analyze(
+                fix_result = self.debugger.analyze(
                     error, code_context
                 )
+                
+                # Extract fix text and revised command
+                if isinstance(fix_result, dict):
+                    fix_text = fix_result.get("fix", "")
+                    revised_cmd = fix_result.get("revised_command")
+                else:
+                    fix_text = fix_result
+                    revised_cmd = None
+
+                # Use revised command if available, otherwise keep original
+                cmd_to_run = revised_cmd or original_cmd
 
                 # Re-generate with fix context
                 fix_task = {
                     "id": task['id'],
                     "description": (
                         f"{task['description']}. "
-                        f"{fix_prompt}"
+                        f"{fix_text}"
                     ),
                     "type": "fix",
                 }
@@ -201,7 +223,7 @@ class RicaAgent:
                 if new_files:
                     files = new_files
 
-                result = executor.run(cmd)
+                result = executor.run(cmd_to_run)
                 logger.info(
                     f"[rica] Re-ran after fix "
                     f"{iteration}: "

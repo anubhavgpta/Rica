@@ -1,5 +1,23 @@
 import os
+import re
 from pathlib import Path
+
+def sanitize_workspace_name(slug: str) -> str:
+    """
+    Sanitize a string to create a safe workspace name.
+    
+    Strips everything except alphanumeric, underscore, and hyphen.
+    No apostrophes, backticks, brackets, or dots.
+    Limited to 40 characters.
+    
+    Args:
+        slug: Input string (typically from goal)
+        
+    Returns:
+        str: Safe workspace name
+    """
+    safe = re.sub(r"[^a-zA-Z0-9_\-]", "", slug)
+    return safe[:40]
 
 def get_workspace_root() -> Path:
     """

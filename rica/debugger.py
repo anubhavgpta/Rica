@@ -15,9 +15,9 @@ class RicaDebugger:
         self,
         error: str,
         code_context: str = ""
-    ) -> str:
+    ) -> dict | str:
         """
-        Returns a fix prompt string.
+        Returns a dict with fix description and optional revised command.
         Calls Gemini to analyze error and provide specific fix instruction.
         """
         logger.debug(
@@ -34,10 +34,18 @@ Code context:
 {code_context}
 
 Analyze this error and provide a specific,
-actionable fix instruction.
+actionable fix instruction. If the error is related
+to a command that should be different on Windows,
+provide the corrected command.
 
-Return ONLY the fix instruction as plain text.
-One sentence. No markdown."""
+Return a JSON response:
+{{
+    "fix": "human readable explanation of the fix",
+    "revised_command": "the corrected command to run, or null if command is fine"
+}}
+
+If the command is correct, set revised_command to null.
+One sentence for the fix. No markdown."""
 
         try:
             response = self.client.models.generate_content(
@@ -45,14 +53,28 @@ One sentence. No markdown."""
                 contents=prompt
             )
             
-            fix_instruction = response.text.strip()
-            if fix_instruction:
-                logger.info(f"[debugger] Generated fix: {fix_instruction[:60]}")
-                return fix_instruction
+            response_text = response.text.strip()
+            if response_text:
+                # Try to parse as JSON first
+                try:
+                    import json
+                    result = json.loads(response_text)
+                    if isinstance(result, dict) and "fix" in result:
+                        logger.info(f"[debugger] Generated fix: {result.get('fix', '')[:60]}")
+                        if result.get("revised_command"):
+                            logger.info(f"[debugger] Revised command: {result['revised_command']}")
+                        return result
+                except json.JSONDecodeError:
+                    # Fallback: treat as plain text (backward compatibility)
+                    logger.info(f"[debugger] Generated fix (text): {response_text[:60]}")
+                    return {"fix": response_text, "revised_command": None}
+                
+                logger.warning("[debugger] Invalid JSON response, using fallback")
+                return {"fix": response_text, "revised_command": None}
             else:
                 logger.warning("[debugger] Empty fix instruction")
-                return f"Fix error: {error}"
+                return {"fix": f"Fix error: {error}", "revised_command": None}
                 
         except Exception as e:
             logger.error(f"[debugger] Analysis failed: {e}")
-            return f"Fix error: {error}"
+            return {"fix": f"Fix error: {error}", "revised_command": None}

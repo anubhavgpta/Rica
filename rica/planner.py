@@ -57,6 +57,15 @@ Rules:
 - codegen tasks must name the specific file to create
 - execute tasks must give the exact command
 - IMPORTANT: For web applications (Flask, FastAPI, Django, Express, etc.), do NOT include a task to start/run the server. Only scaffold and write the code files. The user will start the server themselves.
+- IMPORTANT: You are running on Windows.
+  - Use `mkdir` only via Python (os.makedirs) not as a shell command.
+  - Never use `source` — use `.\venv\Scripts\activate` for venv.
+  - Never plan a "activate venv" task — venv activation doesn't persist across subprocess calls. Install packages with `pip install` directly instead.
+  - Use `python` not `python3`.
+  - Use backslashes or pathlib for paths.
+  - Do NOT plan tasks that start a server (flask run, uvicorn, etc).
+  - To install from requirements.txt, always use `pip install -r requirements.txt`, never `python requirements.txt`.
+  - To install a single package, use `pip install <package>`.
 - No explanations, no markdown, JSON only"""
 
         # Try 3 times to get valid JSON
