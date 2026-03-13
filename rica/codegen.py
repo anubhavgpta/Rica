@@ -77,6 +77,8 @@ class RicaCodegen:
             # Fall back to full file write
             logger.warning("[codegen] str_replace failed, falling back to full write")
             return None
+        # Normalize imports if edit was successful and file existed
+        self._normalize_imports(target)
         return target
 
     def _apply_append(
@@ -95,7 +97,80 @@ class RicaCodegen:
             logger.info(f"[codegen] Created new file: {target}")
         else:
             StrReplacer.append(target, content)
+            # Normalize imports if file existed
+            self._normalize_imports(target)
         return target
+
+    def _normalize_imports(
+        self,
+        filepath: Path
+    ) -> None:
+        """
+        Move any import statements that landed
+        in the middle of the file to the top,
+        after any existing imports.
+        """
+        content = filepath.read_text(
+            encoding='utf-8'
+        )
+        lines = content.splitlines(keepends=True)
+
+        top_lines = []    # imports + blanks at top
+        body_lines = []   # everything else
+        import_lines = [] # stray imports found mid-file
+
+        # Find where the existing top-of-file
+        # imports end (first non-import,
+        # non-blank, non-comment line)
+        in_header = True
+        for line in lines:
+            stripped = line.strip()
+            if in_header:
+                if (stripped == ''
+                    or stripped.startswith('#')
+                    or stripped.startswith('import ')
+                    or stripped.startswith('from ')):
+                    top_lines.append(line)
+                else:
+                    in_header = False
+                    body_lines.append(line)
+            else:
+                # Check if this is a stray import
+                if (stripped.startswith('import ')
+                        or stripped.startswith(
+                            'from ')):
+                    import_lines.append(line)
+                else:
+                    body_lines.append(line)
+
+        if not import_lines:
+            return  # nothing to fix
+
+        # Insert stray imports after existing
+        # top imports, deduplicating
+        existing_top = ''.join(top_lines)
+        new_imports = [
+            l for l in import_lines
+            if l.strip() not in existing_top
+        ]
+        if not new_imports:
+            return
+
+        # Rebuild: top + new imports + body
+        new_content = (
+            ''.join(top_lines).rstrip('\n')
+            + '\n'
+            + ''.join(new_imports)
+            + '\n'
+            + ''.join(body_lines)
+        )
+        filepath.write_text(
+            new_content, encoding='utf-8'
+        )
+        logger.info(
+            f"[codegen] Normalized imports"
+            f" in {filepath.name}"
+        )
 
     def generate(
         self,
