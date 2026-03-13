@@ -297,6 +297,26 @@ class RicaAgent:
 
                 # Use revised command if available, otherwise keep original
                 cmd_to_run = revised_cmd or original_cmd
+                
+                # Re-check skip execution after debugger modifies command
+                if self._should_skip_execution(cmd_to_run):
+                    result = {
+                        "stdout": (
+                            f"Skipped execution of module"
+                            f" file (no __main__): {cmd_to_run}"
+                        ),
+                        "stderr": "",
+                        "exit_code": 0,
+                        "success": True,
+                    }
+                else:
+                    result = executor.run(cmd_to_run)
+
+                logger.info(
+                    f"[rica] Re-ran after fix "
+                    f"{iteration}: "
+                    f"exit={result['exit_code']}"
+                )
 
                 # Re-generate with fix context
                 fix_task = {
