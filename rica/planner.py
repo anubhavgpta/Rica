@@ -80,6 +80,8 @@ Rules:
   - Do NOT plan a task to "verify" a file was written by running it. Verification of file contents should be done by reading the file, not executing it. This applies to ALL files, especially module/utility files like utils/paths.py, helpers.py, models.py, etc.
   - Do NOT plan any task that involves reading, checking, or verifying the contents of a file by executing it. File content verification should only involve reading operations, not execution.
   - When testing a CLI app that requires arguments, always include the arguments in the run command. Never plan to run a CLI script bare (python script.py) if it requires args to do anything useful.
+- When modifying an existing file, prefer surgical edits over full rewrites. Use EDIT: or APPEND: format rather than FILE: when adding to or modifying an existing file.
+- Only use FILE: format when: creating a brand new file, or the task requires rewriting the entire file structure.
 - No explanations, no markdown, JSON only"""
 
         # Try 3 times to get valid JSON
