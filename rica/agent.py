@@ -1,476 +1,63 @@
-import uuid
-import re
-from pathlib import Path
-from loguru import logger
-from rica.planner import RicaPlanner
-from rica.codegen import RicaCodegen
-from rica.executor import RicaExecutor
-from rica.debugger import RicaDebugger
-from rica.workspace import WorkspaceMemory
-from rica.result import RicaResult
-from rica.utils.paths import ensure_workspace
-from rica.reader import CodebaseReader
-from rica.testrunner import TestRunner
+from rica.agents import (
+    CoderAgent,
+    DebuggerAgent,
+    PlannerAgent,
+    ReviewerAgent,
+)
+from rica.core.controller import MultiAgentController
+from rica.logging_utils import setup_workspace_logging
+from rica.memory import memory_manager
+from rica.utils.paths import (
+    ensure_workspace,
+    sanitize_workspace_name,
+)
 
-MAX_ITERATIONS = 5
-MAX_TEST_ITERATIONS = 3
 
 class RicaAgent:
     """
-    Autonomous coding agent.
-    Callable by ALARA's CodingAgent.
+    Autonomous multi-agent coding system.
 
-    Usage:
-        from rica import RicaAgent
+    Public contract remains:
         agent = RicaAgent(config)
-        result = agent.run(goal, workspace_name)
+        result = agent.run(goal, project_dir, workspace_name)
     """
 
     def __init__(self, config: dict):
-        """
-        config must contain:
-            api_key: str    (Gemini API key)
-            model: str      (e.g. gemini-2.5-flash)
-        """
         self.config = config
-        self.planner = RicaPlanner(config)
-        self.codegen = RicaCodegen(config)
-        self.debugger = RicaDebugger(config)
-        self.client = None  # Will be set when needed
-        self.model = config.get("model", "gemini-2.5-flash")
+        self.planner_agent = PlannerAgent(config)
+        self.coder_agent = CoderAgent(config)
+        self.reviewer_agent = ReviewerAgent(config)
+        self.debugger_agent = DebuggerAgent(config)
+        self.controller = MultiAgentController(config)
+
+        # Preserve access to the existing core components.
+        self.planner = self.planner_agent.planner
+        self.codegen = self.coder_agent.codegen
+        self.debugger = self.debugger_agent.debugger
+        self.model = config.get(
+            "model", "gemini-2.5-flash"
+        )
 
     def run(
         self,
         goal: str,
         project_dir: str = None,
         workspace_name: str | None = None,
-    ) -> RicaResult:
-        """
-        Main entry point. Runs the full
-        plan → generate → execute → debug loop.
-        Returns a RicaResult.
-        """
-        # Fix B: Sanitize workspace name if provided to remove special characters
-        if workspace_name:
-            # Apply the same sanitization logic as specified
-            slug = re.sub(
-                r"[^a-zA-Z0-9_\-]", "", 
-                workspace_name[:50].lower().replace(' ', '_')
-            )[:35]
-            workspace_name = slug
-        
-        ws_name = workspace_name or (
-            f"rica_{uuid.uuid4().hex[:8]}"
+    ):
+        resolved_workspace_name = (
+            sanitize_workspace_name(workspace_name)
+            if workspace_name
+            else "project_x"
         )
-        workspace_dir = str(
-            ensure_workspace(ws_name)
+        workspace = str(
+            ensure_workspace(resolved_workspace_name)
         )
-        
-        # Resolve project_dir
-        if project_dir and Path(project_dir).exists():
-            self.project_dir = str(
-                Path(project_dir).resolve()
-            )
-        else:
-            self.project_dir = workspace_dir
-        
-        # Initialize client for reader
-        import google.genai as genai
-        self.client = genai.Client(api_key=self.config["api_key"])
-        
-        # Create codebase snapshot
-        reader = CodebaseReader()
-        snapshot = reader.snapshot(
-            self.project_dir,
-            goal,
-            self.client,
-            self.model,
+        setup_workspace_logging(workspace)
+        memory_manager.load_memory(
+            workspace, goal=goal
         )
-        logger.info(
-            f"[rica] Codebase: {len(snapshot.files)}"
-            f" files read, is_empty={snapshot.is_empty}"
-        )
-        
-        # Store snapshot for use in _run_task
-        self.snapshot = snapshot
-        
-        memory = WorkspaceMemory(
+        return self.controller.run(
             goal=goal,
-            workspace_dir=workspace_dir,
-            project_dir=self.project_dir,
-            snapshot_summary=snapshot.summary,
-            files_read=len(snapshot.files)
+            project_dir=project_dir,
+            workspace_name=resolved_workspace_name,
         )
-
-        logger.info(
-            f"[rica] Starting: {goal[:60]}"
-        )
-        logger.info(
-            f"[rica] Workspace: {workspace_dir}"
-        )
-        if self.project_dir != workspace_dir:
-            logger.info(
-                f"[rica] Project: {self.project_dir}"
-            )
-
-        try:
-            tasks = self.planner.plan(goal, snapshot)
-            logger.info(
-                f"[rica] Planned "
-                f"{len(tasks)} tasks"
-            )
-
-            for task in tasks:
-                memory.iteration += 1
-                self._run_task(
-                    task, memory, workspace_dir, snapshot
-                )
-
-            logger.info(
-                f"[rica] Completed: "
-                f"{memory.summary()}"
-            )
-            
-            # --- Test runner phase ---
-            # Only runs if:
-            #   - real project (not workspace-only)
-            #   - files were written to project
-            #   - tests exist
-            
-            if (
-                self.project_dir != workspace_dir
-                and len(memory.files_created) > 0
-            ):
-                runner = TestRunner(self.project_dir)
-                test_files = runner.find_tests(snapshot)
-
-                if test_files:
-                    logger.info(
-                        f"[rica] Found {len(test_files)}"
-                        f" test file(s), running pytest"
-                    )
-                    test_result = runner.run()
-
-                    test_iteration = 0
-                    while (
-                        not test_result['success']
-                        and test_iteration
-                            < MAX_TEST_ITERATIONS
-                    ):
-                        test_iteration += 1
-                        memory.iteration += 1
-
-                        logger.warning(
-                            f"[rica] Tests failed"
-                            f" (attempt {test_iteration})"
-                            f": {test_result['summary']}"
-                        )
-                        memory.record_error(
-                            test_result['output']
-                        )
-
-                        # Ask debugger to analyze
-                        # test failures
-                        fix_result = self.debugger.analyze(
-                            test_result['output'],
-                            {
-                                'id': 'test_fix',
-                                'description': (
-                                    'Fix failing tests'
-                                ),
-                                'type': 'test_fix',
-                            },
-                            snapshot,
-                        )
-
-                        if isinstance(fix_result, dict):
-                            fix_text = fix_result.get(
-                                'fix', ''
-                            )
-                        else:
-                            fix_text = fix_result
-
-                        # Re-generate fix
-                        fix_task = {
-                            'id': 'test_fix',
-                            'description': (
-                                f"Fix failing tests. "
-                                f"{fix_text}"
-                            ),
-                            'type': 'fix',
-                        }
-                        new_files = self.codegen.generate(
-                            fix_task,
-                            snapshot,
-                            workspace_dir,
-                            self.project_dir,
-                        )
-                        for f in new_files:
-                            memory.record_file(
-                                f, created=False
-                            )
-
-                        # Re-run tests
-                        test_result = runner.run()
-
-                    if test_result['success']:
-                        logger.info(
-                            f"[rica] Tests green after"
-                            f" {test_iteration} fix(es):"
-                            f" {test_result['summary']}"
-                        )
-                    else:
-                        # Bail and report
-                        logger.error(
-                            f"[rica] Tests still failing"
-                            f" after {MAX_TEST_ITERATIONS}"
-                            f" attempts. Bailing."
-                        )
-                    return RicaResult(
-                        success=False,
-                        goal=goal,
-                        workspace_dir=workspace_dir,
-                        files_created=memory.files_created,
-                        files_modified=memory.files_modified,
-                        error=(
-                            f"Tests failed after"
-                            f" {MAX_TEST_ITERATIONS}"
-                            f" fix attempts:\n"
-                            f"{test_result['output']}"
-                        ),
-                        iterations=memory.iteration,
-                    )
-            else:
-                logger.debug(
-                    "[rica] No test files found,"
-                    " skipping test runner"
-                )
-            
-            return RicaResult(
-                success=True,
-                goal=goal,
-                workspace_dir=workspace_dir,
-                files_created=memory.files_created,
-                files_modified=memory.files_modified,
-                summary=memory.summary(),
-                iterations=memory.iteration,
-            )
-
-        except Exception as e:
-            logger.error(
-                f"[rica] Failed: {e}"
-            )
-            return RicaResult(
-                success=False,
-                goal=goal,
-                workspace_dir=workspace_dir,
-                error=str(e),
-                iterations=memory.iteration,
-            )
-
-    def _should_skip_execution(
-        self,
-        command: str,
-    ) -> bool:
-        """Skip running module files with
-        no __main__ entry point."""
-        import re
-        from pathlib import Path
-        
-        match = re.search(
-            r'python\s+"?([^\s"]+\.py)"?',
-            command,
-            re.IGNORECASE
-        )
-        if not match:
-            return False
-        
-        filepath = match.group(1)
-        fname = Path(filepath).name
-        
-        # Check snapshot files for __main__
-        if self.snapshot and \
-                not self.snapshot.is_empty:
-            for rel_path, content in \
-                    self.snapshot.files.items():
-                if Path(rel_path).name == fname:
-                    has_main = (
-                        '__main__' in content
-                        or 'if __name__' in content
-                    )
-                    if not has_main:
-                        logger.info(
-                            f"[rica] Skipping exec"
-                            f" of module (no __main__)"
-                            f": {fname}"
-                        )
-                        return True
-        return False
-
-    def _run_task(
-        self,
-        task: dict,
-        memory: WorkspaceMemory,
-        workspace_dir: str,
-        snapshot,
-    ) -> None:
-        """
-        Runs a single task through the
-        codegen → execute → debug loop.
-        """
-        logger.debug(
-            f"[rica] Task {task['id']}: "
-            f"{task['description'][:60]}"
-        )
-
-        # Use project_dir as cwd for file-modifying commands
-        executor = RicaExecutor(self.project_dir)
-
-        # Step 1: Generate code
-        files = self.codegen.generate(
-            task, snapshot, workspace_dir, self.project_dir
-        )
-        for f in files:
-            memory.record_file(f, created=True)
-
-        if not files:
-            logger.warning(
-                f"[rica] No files generated "
-                f"for task {task['id']}"
-            )
-            return
-
-        # Step 2: If task type is execute or test,
-        # run the command
-        if task['type'] in ('execute', 'test'):
-            original_cmd = task.get('command', '')
-            if not original_cmd:
-                # Infer: python <first_file>
-                from pathlib import Path
-                file_path = Path(files[0])
-                rel_path = str(file_path.relative_to(workspace_dir))
-                original_cmd = f"python {rel_path}"
-
-            cmd_to_run = original_cmd
-            
-            # Skip execution for non-entry point files
-            if self._should_skip_execution(cmd_to_run):
-                result = {
-                    "stdout": (
-                        f"Skipped execution of module"
-                        f" file (no __main__): {cmd_to_run}"
-                    ),
-                    "stderr": "",
-                    "exit_code": 0,
-                    "success": True,
-                }
-            else:
-                result = executor.run(cmd_to_run)
-            
-            logger.info(
-                f"[rica] Executed: {cmd_to_run} → "
-                f"exit={result['exit_code']}"
-            )
-
-            # Step 3: Debug loop if failed
-            iteration = 0
-            while (
-                not result['success']
-                and iteration < MAX_ITERATIONS
-            ):
-                iteration += 1
-                memory.iteration += 1
-                error = (
-                    result['stderr']
-                    or result['stdout']
-                )
-                memory.record_error(error)
-
-                logger.warning(
-                    f"[rica] Error on attempt "
-                    f"{iteration}: {error[:80]}"
-                )
-
-                # Read current file for context
-                code_context = ""
-                if files:
-                    try:
-                        code_context = open(
-                            files[0]
-                        ).read()
-                    except Exception:
-                        pass
-
-                fix_result = self.debugger.analyze(
-                    error, task, snapshot
-                )
-                
-                # Extract fix text and revised command
-                if isinstance(fix_result, dict):
-                    fix_text = fix_result.get("fix", "")
-                    revised_cmd = fix_result.get("revised_command")
-                else:
-                    fix_text = fix_result
-                    revised_cmd = None
-
-                # Use revised command if available, otherwise keep original
-                cmd_to_run = revised_cmd or original_cmd
-                
-                # Re-check skip execution after debugger modifies command
-                if self._should_skip_execution(cmd_to_run):
-                    result = {
-                        "stdout": (
-                            f"Skipped execution of module"
-                            f" file (no __main__): {cmd_to_run}"
-                        ),
-                        "stderr": "",
-                        "exit_code": 0,
-                        "success": True,
-                    }
-                else:
-                    result = executor.run(cmd_to_run)
-
-                logger.info(
-                    f"[rica] Re-ran after fix "
-                    f"{iteration}: "
-                    f"exit={result['exit_code']}"
-                )
-
-                # Re-generate with fix context
-                fix_task = {
-                    "id": task['id'],
-                    "description": (
-                        f"{task['description']}. "
-                        f"{fix_text}"
-                    ),
-                    "type": "fix",
-                }
-                new_files = self.codegen.generate(
-                    fix_task, snapshot, workspace_dir, self.project_dir
-                )
-                for f in new_files:
-                    memory.record_file(
-                        f, created=False
-                    )
-                if new_files:
-                    files = new_files
-
-                result = executor.run(cmd_to_run)
-                logger.info(
-                    f"[rica] Re-ran after fix "
-                    f"{iteration}: "
-                    f"exit={result['exit_code']}"
-                )
-
-            if result['success']:
-                logger.info(
-                    f"[rica] Task {task['id']} "
-                    f"succeeded after "
-                    f"{iteration} fixes"
-                )
-            else:
-                logger.error(
-                    f"[rica] Task {task['id']} "
-                    f"failed after "
-                    f"{MAX_ITERATIONS} attempts"
-                )

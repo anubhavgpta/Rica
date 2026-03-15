@@ -1,5 +1,8 @@
-from loguru import logger
 import google.genai as genai
+
+from rica.logging_utils import get_component_logger
+
+logger = get_component_logger("debugger")
 
 class RicaDebugger:
     """

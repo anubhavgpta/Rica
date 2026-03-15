@@ -4,14 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rica"
-version = "0.1.0"
-description = "Runtime Intelligent Coding Assistant — autonomous coding agent for ALARA"
+version = "0.2.0"
+description = "Runtime Intelligent Coding Assistant standalone developer CLI"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "google-genai>=1.0.0",
     "loguru>=0.7.0",
     "pydantic>=2.0.0",
     "rich>=13.0.0",
+    "pytest>=7.0.0",
 ]
 
 [project.scripts]

@@ -1,5 +1,8 @@
 import subprocess
-from loguru import logger
+
+from rica.logging_utils import get_component_logger
+
+logger = get_component_logger("executor")
 
 class RicaExecutor:
     """

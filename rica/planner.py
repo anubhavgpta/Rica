@@ -1,10 +1,12 @@
-import os
 import re
 import json
 import time
 import random
-from loguru import logger
 import google.genai as genai
+
+from rica.logging_utils import get_component_logger
+
+logger = get_component_logger("planner")
 
 class RicaPlanner:
     """
@@ -31,7 +33,7 @@ class RicaPlanner:
         # Fallback: return original text
         return text.strip()
 
-    def plan(self, goal: str, snapshot = None) -> list[dict]:
+    def plan(self, goal: str, snapshot = None, tool_names: list[str] = None, workspace_files: list[str] = None) -> list[dict]:
         """
         Returns list of subtask dicts.
         Calls Gemini to decompose the goal into 2-6 ordered subtasks.
@@ -46,13 +48,30 @@ class RicaPlanner:
         else:
             context = "Starting a fresh project."
         
-        prompt = f"""{context}
+        # Add workspace files to context
+        if workspace_files:
+            context += f"\n\nWorkspace files: {', '.join(workspace_files)}"
+        
+        prompt = f"""You are the planning module for an autonomous coding agent.
 
-Goal: {goal}
+Your job is to convert the user goal into a list of executable tasks.
 
-You are a coding task planner.
-Break this into 2-6 ordered subtasks.
-Each task must be concrete and actionable.
+CRITICAL RULES:
+
+1. NEVER reinterpret or change the user's goal
+2. NEVER substitute filenames or targets
+3. If the requested file does not exist, create a task that verifies or reports this
+4. DO NOT perform unrelated cleanup or refactoring
+5. Only produce tasks that directly achieve the goal
+
+Goal:
+{goal}
+
+Project files:
+{context}
+
+Return a list of tasks required to achieve the goal.
+Prefer a single task when possible.
 
 Return ONLY a JSON array:
 [
@@ -63,14 +82,9 @@ Return ONLY a JSON array:
   }}
 ]
 
-Rules:
-- Start with scaffold if files need creating
-- codegen tasks must name the specific file to create
-- execute tasks must give the exact command
-- IMPORTANT: For web applications (Flask, FastAPI, Django, Express, etc.), do NOT include a task to start/run the server. Only scaffold and write the code files. The user will start the server themselves.
-- IMPORTANT: You are running on Windows.
+IMPORTANT: You are running on Windows.
   - Use `mkdir` only via Python (os.makedirs) not as a shell command.
-  - Never use `source` — use `.\venv\Scripts\activate` for venv.
+  - Never use `source` — use `.\\venv\\Scripts\\activate` for venv.
   - Never plan a "activate venv" task — venv activation doesn't persist across subprocess calls. Install packages with `pip install` directly instead.
   - Use `python` not `python3`.
   - Use backslashes or pathlib for paths.

@@ -35,6 +35,16 @@ def ensure_workspace(name: str) -> Path:
     Create and return a named workspace dir
     under the workspace root.
     """
-    ws = get_workspace_root() / name
-    ws.mkdir(parents=True, exist_ok=True)
-    return ws
+    candidates = [
+        get_workspace_root() / name,
+        Path.cwd() / "rica_workspace" / name,
+    ]
+    for ws in candidates:
+        try:
+            ws.mkdir(parents=True, exist_ok=True)
+            return ws
+        except PermissionError:
+            continue
+    raise PermissionError(
+        "Unable to create a writable RICA workspace directory."
+    )
