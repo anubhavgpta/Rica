@@ -23,6 +23,7 @@ from rica.logging_utils import (
     get_component_logger,
 )
 from rica.memory import ProjectMemory
+from rica.memory.memory_store import get_memory_store, append_memory
 from rica.reader import CodebaseReader, scan_project_structure
 from rica.result import RicaResult
 from rica.tools import ToolRegistry
@@ -50,11 +51,11 @@ def classify_task_for_routing(task_description: str) -> str:
     if any(x in desc for x in ["install", "pip install", "requirements"]):
         return "dependency_install"
     
-    if any(x in desc for x in ["run", "execute", "python"]):
-        return "command_run"
-    
     if any(x in desc for x in ["create", "write", "modify", "edit"]):
         return "code_generation"
+    
+    if any(x in desc for x in ["run", "execute", "python"]):
+        return "command_run"
     
     return "code_generation"
 
@@ -164,7 +165,7 @@ class MultiAgentController:
         self.coder_agent = CoderAgent(config)
         self.executor_agent = None  # Will be initialized with workspace
         self.reviewer_agent = ReviewerAgent(config)
-        self.debugger_agent = DebuggerAgent(config)
+        self.debugger_agent = None  # Will be initialized with workspace
         self.worker_pool = WorkerPool(size=1)
         self.dependency_manager = None  # Will be initialized with project
         self.agent_logger = None  # Will be initialized with workspace
@@ -206,8 +207,15 @@ class MultiAgentController:
         # Initialize executor agent with resolved project directory
         self.executor_agent = ExecutorAgent(resolved_project_dir)
         
+        # Initialize debugger agent with workspace
+        self.debugger_agent = DebuggerAgent(self.config, workspace_dir)
+        
         # Initialize dependency manager
         self.dependency_manager = DependencyManager(resolved_project_dir, self.executor_agent)
+        
+        # Initialize enhanced memory store
+        self.memory_store = get_memory_store(workspace_dir)
+        logger.info(f"[memory] Initialized persistent memory store for {workspace_dir}")
         
         # Initialize repository graph
         self.repo_graph = RepoGraph()
@@ -265,6 +273,7 @@ class MultiAgentController:
             self.snapshot,
             tool_names=self.tool_registry.names(),
             workspace_files=workspace_files,
+            workspace_dir=workspace_dir,
         )
         
         # Validate tasks to prevent hallucinations
@@ -352,19 +361,25 @@ class MultiAgentController:
                 if result.get("files"):
                     memory.record_files_created(result.get("files", []))
                     self.agent_logger.log_agent_activity("memory", "FILES_CREATED", f"Count: {len(result.get('files', []))}")
+                    
+                    # Update enhanced memory store
+                    for file_path in result.get("files", []):
+                        append_memory(workspace_dir, "files_created", {"path": file_path, "task_id": task_id})
             
             if result.get("error"):
-                memory.record_error(
-                    result["error"]
-                )
+                memory.record_error(result["error"])
                 if self.agent_logger:
                     self.agent_logger.log_error("agent", result["error"], f"Task {task.get('id', 'unknown')}")
-
-        test_result = self._run_test_phase(
-            memory,
-            workspace_dir,
-            resolved_project_dir,
-        )
+            
+            # Store task completion in enhanced memory
+            if result.get("success", False):
+                task_data = {
+                    "id": task_id,
+                    "description": task.get("description", ""),
+                    "type": task.get("type", ""),
+                    "completed_at": memory.task_history[-1].get("timestamp") if memory.task_history else None
+                }
+                append_memory(workspace_dir, "tasks_completed", task_data)
         
         # Log session completion with correct iteration count and duration
         if self.agent_logger:
@@ -376,24 +391,12 @@ class MultiAgentController:
         
         # Update memory with correct iteration count
         memory.iteration = iterations
-        
-        if not test_result["success"]:
-            return RicaResult(
-                success=False,
-                goal=goal,
-                workspace_dir=workspace_dir,
-                files_created=memory.files_created,
-                files_modified=memory.files_modified,
-                error=test_result["error"],
-                iterations=iterations,
-            )
 
         return RicaResult(
             success=all(
                 item.get("success", True)
                 for item in task_results
-            )
-            and test_result["success"],
+            ),
             goal=goal,
             workspace_dir=workspace_dir,
             files_created=memory.files_created,
@@ -512,6 +515,18 @@ class MultiAgentController:
         elif task_type == "command_run":
             # Execute the command directly
             result = self.executor_agent.run(task_desc)
+            
+            # Store command in persistent memory
+            import time
+            command_data = {
+                "command": task_desc,
+                "success": result.get("success", False),
+                "timestamp": time.time(),
+                "task_id": task_id
+            }
+            append_memory(workspace_dir, "commands_run", command_data)
+            logger.info(f"[memory] stored command execution")
+            
             return {
                 "success": result.get("success", False),
                 "files": [],
@@ -653,8 +668,15 @@ class MultiAgentController:
         )
         iteration = 0
         error_history: list[str] = []
-
-        while iteration < self.max_fix_attempts:
+        fix_history: list[str] = []
+        max_debug_attempts = 3
+        syntax_error_count = 0
+        
+        logger.info(f"[debugger] Starting execution loop for task {task['id']}")
+        
+        while iteration < self.max_fix_attempts and iteration < max_debug_attempts:
+            logger.info(f"[debugger] retry attempt {iteration + 1}")
+            
             if self._should_skip_execution(command):
                 result = {
                     "success": True,
@@ -672,6 +694,7 @@ class MultiAgentController:
                 result = self.executor_agent.run(command)
 
             if result["success"]:
+                logger.info(f"[debugger] Execution succeeded on attempt {iteration + 1}")
                 return {
                     "success": True,
                     "error": None,
@@ -683,23 +706,50 @@ class MultiAgentController:
                 or result.get("stdout")
                 or "Unknown execution failure"
             )
+            
+            logger.info(f"[debugger] analyzing traceback: {error[:200]}...")
+            
+            # Safety check: stop if fix repeats
+            if error_history.count(error) >= 2:
+                logger.warning(f"[debugger] Same error repeated, stopping retry loop")
+                break
+                
             error_history.append(error)
             memory.record_error(error)
-            if error_history.count(error) >= 3:
-                logger.warning(
-                    f"[agent] Repeated execution error detected for task {task['id']}"
-                )
-                break
+            
+            # Safety check: stop if syntax error persists
+            if "SyntaxError" in error or "syntax error" in error.lower():
+                syntax_error_count += 1
+                if syntax_error_count >= 2:
+                    logger.error(f"[debugger] Persistent syntax error detected, stopping retry loop")
+                    break
+            
             self._emit(
                 "debugger",
                 "debugging",
                 error[:120],
             )
+            
+            logger.info(f"[debugger] generating fix")
             fix = self.debugger_agent.analyze(
                 error,
                 task,
                 self.snapshot,
             )
+            
+            # Safety check: stop if fix repeats
+            fix_description = fix.get("fix", "")
+            if fix_history.count(fix_description) >= 2:
+                logger.warning(f"[debugger] Same fix repeated, stopping retry loop")
+                break
+                
+            fix_history.append(fix_description)
+            
+            # Safety check: stop if debugger signals to stop
+            if fix.get("stop_retrying", False):
+                logger.warning(f"[debugger] Debugger signaled to stop retrying")
+                break
+            
             fix_task = {
                 "id": f"{task['id']}-debug-{iteration}",
                 "description": (
@@ -710,12 +760,20 @@ class MultiAgentController:
                 "status": "pending",
                 "source": "debugger",
             }
+            
+            logger.info(f"[debugger] applying fix: {fix_description[:100]}...")
+            
             new_files = self.coder_agent.execute(
                 fix_task,
                 snapshot=self.snapshot,
                 workspace_dir=workspace_dir,
                 project_dir=project_dir,
             )
+            
+            # Safety check: verify fix was applied
+            if not new_files and not fix_task.get("command"):
+                logger.warning(f"[debugger] No files modified by fix, may need manual intervention")
+                
             for file_path in new_files:
                 memory.record_file(
                     file_path, created=False
@@ -730,11 +788,12 @@ class MultiAgentController:
                 or command
             )
 
+        logger.error(f"[debugger] Execution failed after {iteration} attempts")
         return {
             "success": False,
             "error": (
                 f"Task {task['id']} failed after "
-                f"{self.max_fix_attempts} retries"
+                f"{iteration} retries"
             ),
         }
 

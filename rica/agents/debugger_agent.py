@@ -1,5 +1,6 @@
 from rica.debugger import RicaDebugger
 from rica.logging_utils import get_component_logger
+from rica.memory.memory_store import append_memory
 from typing import List, Dict, Any, Optional
 import re
 
@@ -7,9 +8,10 @@ logger = get_component_logger("debugger_agent")
 
 
 class DebuggerAgent:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, workspace_dir: str = None):
         self.config = config
         self.debugger = RicaDebugger(config)
+        self.workspace_dir = workspace_dir
         self.error_history: List[Dict[str, str]] = []
         self.max_error_history = int(config.get("max_error_history", 50))
         self.repeat_threshold = int(config.get("error_repeat_threshold", 3))
@@ -115,12 +117,13 @@ class DebuggerAgent:
 
     def _record_error(self, error: str, task: dict, fix_suggestion: str = ""):
         """Record error in history for pattern detection."""
+        import time
         error_entry = {
             "error": error,
             "task_id": str(task.get("id", "unknown")),
             "task_description": task.get("description", ""),
             "fix_suggestion": fix_suggestion,
-            "timestamp": str(logger._core.start_time if hasattr(logger, '_core') else "unknown")
+            "timestamp": str(time.time())
         }
         
         self.error_history.append(error_entry)
@@ -225,13 +228,14 @@ class DebuggerAgent:
     def learn_pattern(self, error: str, fix: str, success: bool):
         """Learn successful patterns for future use."""
         if success:
+            import time
             pattern_entry = {
                 "pattern": self._normalize_error(error)[:100],  # First 100 chars
                 "fix": fix,
                 "action": "apply_learned_fix",
                 "description": "Previously successful fix",
                 "confidence": 0.7,
-                "learned_at": str(logger._core.start_time if hasattr(logger, '_core') else "unknown")
+                "learned_at": str(time.time())
             }
             self.learned_patterns.append(pattern_entry)
             logger.info(f"[debugger_agent] Learned new pattern (total: {len(self.learned_patterns)})")
@@ -242,6 +246,8 @@ class DebuggerAgent:
         task: dict,
         snapshot=None,
     ) -> dict:
+        logger.info(f"[debugger] analyzing traceback")
+        
         # Check if we should stop retrying this error
         if self._should_stop_retrying(error):
             similar_errors = self.get_similar_errors(error)
@@ -265,6 +271,10 @@ class DebuggerAgent:
             if previous_fixes:
                 context += f"Previous fix attempts: {'; '.join(previous_fixes[:2])}"
         
+        # Get failing file and code snippet for better context
+        failing_file = self._extract_failing_file(error)
+        code_snippet = self._extract_code_snippet(failing_file, snapshot) if failing_file and snapshot else ""
+        
         # Generate fix based on pattern recognition
         if pattern_info:
             pattern_fix = self._generate_pattern_based_fix(pattern_info, error, task)
@@ -287,10 +297,28 @@ class DebuggerAgent:
             # Record the error with pattern-based fix
             self._record_error(error, task, pattern_fix)
             
+            # Store bug fix in persistent memory if workspace is available
+            if self.workspace_dir:
+                bug_fix_data = {
+                    "error": error[:200],  # Truncate for storage
+                    "error_type": pattern_info["error_type"],
+                    "fix": pattern_fix,
+                    "task_id": task.get("id", "unknown"),
+                    "pattern_recognized": True
+                }
+                append_memory(self.workspace_dir, "bugs_fixed", bug_fix_data)
+                logger.info(f"[memory] stored bug fix for {pattern_info['error_type']}")
+            
             return result
         
-        # Fall back to original debugger if no pattern recognized
+        # Fall back to LLM-based fix generation
+        logger.info(f"[debugger] generating fix")
+        
         try:
+            # Build comprehensive prompt for LLM
+            prompt = self._build_debugger_prompt(error, task, failing_file, code_snippet, context)
+            
+            # Use the debugger to generate fix
             debugger_result = self.debugger.analyze(error, task, snapshot)
             
             # Convert to dict format and record the error
@@ -306,6 +334,18 @@ class DebuggerAgent:
             # Record this error for future reference
             self._record_error(error, task, fix_suggestion)
             
+            # Store bug fix in persistent memory if workspace is available
+            if self.workspace_dir and fix_suggestion:
+                bug_fix_data = {
+                    "error": error[:200],  # Truncate for storage
+                    "error_type": "unknown",
+                    "fix": fix_suggestion,
+                    "task_id": task.get("id", "unknown"),
+                    "pattern_recognized": False
+                }
+                append_memory(self.workspace_dir, "bugs_fixed", bug_fix_data)
+                logger.info(f"[memory] stored bug fix (LLM-generated)")
+            
             # Add context about similar errors if available
             if context and "fix" in debugger_result:
                 debugger_result["fix"] = f"{debugger_result['fix']}\n\nContext: {context}"
@@ -318,7 +358,7 @@ class DebuggerAgent:
             return debugger_result
             
         except Exception as e:
-            logger.error(f"[debugger_agent] Original debugger failed: {e}")
+            logger.error(f"[debugger] Original debugger failed: {e}")
             
             # Fallback fix
             fallback_fix = f"Error occurred: {error}. Please review the code and fix the issue manually."
@@ -330,3 +370,70 @@ class DebuggerAgent:
                 "pattern_recognized": False,
                 "stop_retrying": False
             }
+
+    def _extract_failing_file(self, error: str) -> str:
+        """Extract the failing file path from error traceback."""
+        import re
+        
+        # Look for file paths in the traceback
+        patterns = [
+            r'File "([^"]+)", line \d+',
+            r'([a-zA-Z]:\\[^\\s]+\\.py)',
+            r'(/[^\\s]+\\.py)',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, error)
+            if match:
+                return match.group(1)
+        
+        return ""
+
+    def _extract_code_snippet(self, file_path: str, snapshot) -> str:
+        """Extract relevant code snippet from the failing file."""
+        if not file_path or not snapshot:
+            return ""
+        
+        # Try to get file content from snapshot
+        try:
+            # Handle both absolute and relative paths
+            for rel_path, content in snapshot.files.items():
+                if file_path in rel_path or rel_path in file_path:
+                    # Return first few lines of the file
+                    lines = content.split('\n')
+                    return '\n'.join(lines[:20])  # First 20 lines
+        except Exception as e:
+            logger.warning(f"[debugger] Could not extract code snippet: {e}")
+        
+        return ""
+
+    def _build_debugger_prompt(self, error: str, task: dict, failing_file: str, code_snippet: str, context: str) -> str:
+        """Build comprehensive prompt for the LLM debugger."""
+        prompt = f"""The following Python code failed with this error:
+
+{error}
+
+"""
+        
+        if failing_file:
+            prompt += f"Failing file: {failing_file}\n\n"
+        
+        if code_snippet:
+            prompt += f"Here is the relevant code:\n\n{code_snippet}\n\n"
+        elif failing_file and hasattr(self, 'debugger') and hasattr(self.debugger, 'get_file_content'):
+            try:
+                file_content = self.debugger.get_file_content(failing_file)
+                if file_content:
+                    prompt += f"Here is the file:\n\n{file_content}\n\n"
+            except:
+                pass
+        
+        prompt += f"""Task description: {task.get('description', '')}
+
+Fix the bug and return the corrected code. Be specific about what needs to be changed.
+"""
+        
+        if context:
+            prompt += f"\nAdditional context: {context}\n"
+        
+        return prompt

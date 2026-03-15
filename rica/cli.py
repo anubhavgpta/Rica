@@ -8,8 +8,10 @@ from pathlib import Path
 import google.genai as genai
 
 from rica.memory import load_memory
+from rica.memory.memory_store import get_memory_store
 from rica.reader import CodebaseReader
 from rica import RicaAgent
+from rica.core.orchestrator import AgentOrchestrator
 from rica.config import (
     DEFAULT_MODEL,
     get_config_path,
@@ -26,6 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] not in {
         "build",
         "run",
+        "orchestrate",
         "setup",
         "config",
         "doctor",
@@ -47,6 +50,9 @@ def main(argv: list[str] | None = None) -> int:
         return run_doctor()
 
     config = ensure_setup()
+
+    if args.command == "orchestrate":
+        return _run_orchestrator(args.goal, args.workspace, config)
 
     if args.command == "config":
         payload = redact_config(config)
@@ -126,6 +132,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    orchestrate_parser = sub.add_parser(
+        "orchestrate",
+        help="Run the multi-agent orchestrator system",
+    )
+    orchestrate_parser.add_argument(
+        "goal",
+        nargs="*",
+        help="Goal for the multi-agent system",
+    )
+    orchestrate_parser.add_argument(
+        "--workspace",
+        help=(
+            "Target project directory. "
+            "Defaults to configured workspace."
+        ),
+    )
+
     sub.add_parser(
         "setup",
         help="Run the first-time setup wizard",
@@ -169,6 +192,54 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_orchestrator(goal: list[str], workspace: str | None, config: dict) -> int:
+    """Run the multi-agent orchestrator system."""
+    goal_str = " ".join(goal).strip()
+    if not goal_str:
+        print("No goal provided.")
+        return 1
+    
+    print(f"🤖 Starting Multi-Agent Orchestrator")
+    print(f"Goal: {goal_str}")
+    print()
+    
+    # Initialize orchestrator
+    orchestrator = AgentOrchestrator(config)
+    
+    # Run orchestration
+    result = orchestrator.run(goal_str, workspace)
+    
+    # Print results
+    print(f"\n{'='*60}")
+    print(f"🎯 ORCHESTRATION COMPLETE")
+    print(f"{'='*60}")
+    print(f"Success: {'✅' if result.success else '❌'}")
+    print(f"Goal: {result.goal}")
+    print(f"Workspace: {result.workspace_dir}")
+    print(f"Files created: {len(result.files_created)}")
+    print(f"Iterations: {result.iterations}")
+    
+    if hasattr(result, 'execution_time'):
+        print(f"Execution time: {result.execution_time:.2f}s")
+    
+    if result.summary:
+        print(f"\n📊 SUMMARY:")
+        print(result.summary)
+    
+    if result.files_created:
+        print(f"\n📁 FILES CREATED:")
+        for file_path in result.files_created:
+            print(f"  - {file_path}")
+    
+    if result.error:
+        print(f"\n❌ ERROR:")
+        print(result.error)
+    
+    print(f"{'='*60}")
+    
+    return 0 if result.success else 1
+
+
 def _run_agent(
     goal: str,
     workspace: str | None,
@@ -206,9 +277,65 @@ def _run_agent(
 
 def _show_memory(workspace: str | None) -> int:
     project_dir = _resolve_project_dir(workspace)
-    payload = load_memory(project_dir / ".rica_memory.json")
-    print(json.dumps(payload, indent=2))
-    return 0
+    
+    # Try enhanced memory store first
+    try:
+        memory_store = get_memory_store(str(project_dir))
+        summary = memory_store.get_memory_summary()
+        stats = memory_store.get_statistics()
+        
+        print("=== RICA PROJECT MEMORY ===")
+        print(f"Workspace: {project_dir}")
+        print(f"Memory file: {memory_store.memory_file}")
+        print()
+        
+        if summary:
+            print("=== MEMORY SUMMARY ===")
+            print(summary)
+            print()
+        
+        print("=== STATISTICS ===")
+        print(f"Total entries: {stats['total_entries']}")
+        print(f"File size: {stats['file_size_mb']} MB")
+        print("Categories:")
+        for category, count in stats['categories'].items():
+            print(f"  {category}: {count} entries")
+        print()
+        
+        # Show recent entries from each category
+        print("=== RECENT ENTRIES ===")
+        for category in ["tasks_completed", "files_created", "bugs_fixed", "commands_run"]:
+            entries = memory_store.get_category(category)
+            if entries:
+                print(f"\n{category.replace('_', ' ').title()} (last 3):")
+                for entry in entries[-3:]:
+                    if isinstance(entry, dict):
+                        if "description" in entry:
+                            print(f"  - {entry['description']}")
+                        elif "path" in entry:
+                            print(f"  - {entry['path']}")
+                        elif "command" in entry:
+                            print(f"  - {entry['command']}")
+                        elif "error" in entry:
+                            print(f"  - {entry['error'][:80]}...")
+                        else:
+                            print(f"  - {str(entry)[:80]}...")
+                    else:
+                        print(f"  - {str(entry)[:80]}...")
+        
+        return 0
+        
+    except Exception as e:
+        # Fallback to old memory system
+        print(f"Error loading enhanced memory: {e}")
+        print("=== FALLBACK MEMORY ===")
+        try:
+            payload = load_memory(project_dir / ".rica_memory.json")
+            print(json.dumps(payload, indent=2))
+            return 0
+        except Exception as e2:
+            print(f"No memory found: {e2}")
+            return 1
 
 
 def _show_logs(workspace: str | None) -> int:
