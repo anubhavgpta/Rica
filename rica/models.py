@@ -30,3 +30,11 @@ class BuildPlan(BaseModel):
     milestones: List[Milestone] = Field(description="List of milestones to complete")
     install_commands: List[str] = Field(default_factory=list, description="Commands to install dependencies")
     notes: str = Field(default="", description="Additional notes or warnings")
+
+
+class GeneratedFile(BaseModel):
+    """Represents a generated file in the build process."""
+    path: str
+    content: str
+    language: str
+    generated_at: str

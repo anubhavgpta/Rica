@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -11,13 +12,26 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
 
-from .config import PLANS_DIR
+from .config import PLANS_DIR, RICA_HOME
+from .codegen import build_project
 from .db import db
 from .models import BuildPlan
 from .planner import create_plan
 
 app = typer.Typer(help="Rica - Language-Agnostic Autonomous Coding Agent")
 console = Console()
+
+PACKAGE_MANAGER_HINTS: dict[str, str] = {
+    "go":         "go mod tidy && go build ./...",
+    "rust":       "cargo build",
+    "javascript": "npm install && npm run build",
+    "typescript": "npm install && npm run build",
+    "python":     "pip install -r requirements.txt",
+    "ruby":       "bundle install",
+    "php":        "composer install",
+    "elixir":     "mix deps.get && mix compile",
+    "dart":       "flutter pub get",
+}
 
 
 def print_banner() -> None:
@@ -217,6 +231,137 @@ def show(session_id: str) -> None:
     except Exception as e:
         console.print(f"[red]Error loading plan: {e}[/red]")
         raise typer.Exit(1)
+
+
+@app.command()
+def build(
+    session_id: str = typer.Argument(..., help="Session ID to build"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace directory")
+) -> None:
+    """Build a project from an approved plan."""
+    print_banner()
+    
+    # Load plan from DB
+    plan_data = db.get_plan_for_session(session_id)
+    if not plan_data:
+        console.print(f"[red]No plan found for session: {session_id}[/red]")
+        raise typer.Exit(1)
+    
+    if plan_data["approved"] != 1:
+        console.print("[red]Plan is not approved. Run `rica plan` and approve it first.[/red]")
+        raise typer.Exit(1)
+    
+    # Parse plan
+    try:
+        plan = BuildPlan.model_validate_json(plan_data["plan_json"])
+    except Exception as e:
+        console.print(f"[red]Error parsing plan: {e}[/red]")
+        raise typer.Exit(1)
+    
+    # Resolve workspace
+    if workspace:
+        workspace_path = workspace
+    else:
+        workspace_path = RICA_HOME / "workspaces" / session_id
+    
+    # Create workspace directory
+    workspace_path.mkdir(parents=True, exist_ok=True)
+    
+    # Insert build record
+    build_id = str(uuid.uuid4())
+    started_at = datetime.utcnow().isoformat() + "Z"
+    db.insert_build(build_id, session_id, str(workspace_path), started_at)
+    
+    # Show build starting panel
+    console.print(Panel(
+        f"Building: [bold]{plan.goal}[/bold]\nWorkspace: {workspace_path}",
+        title="Build starting",
+        border_style="dim"
+    ))
+    
+    try:
+        # Build the project
+        generated_files = build_project(plan, workspace_path, console)
+        
+        # Show summary table
+        console.print("─" * 80, style="dim")
+        console.print("Build Summary", style="bold")
+        console.print("─" * 80, style="dim")
+        
+        summary_table = Table()
+        summary_table.add_column("File", style="cyan")
+        summary_table.add_column("Language", style="green")
+        summary_table.add_column("Size (bytes)", justify="right", style="blue")
+        
+        for gen_file in generated_files:
+            file_path = workspace_path / gen_file.path
+            size_bytes = file_path.stat().st_size if file_path.exists() else 0
+            summary_table.add_row(gen_file.path, gen_file.language, str(size_bytes))
+        
+        console.print(summary_table)
+        
+        # Show package manager hint if available
+        hint = PACKAGE_MANAGER_HINTS.get(plan.language.lower())
+        if hint:
+            console.print()
+            console.print(
+                f"  [dim]Next step: cd {workspace_path} && {hint}[/dim]"
+            )
+        
+        # Complete build
+        completed_at = datetime.utcnow().isoformat() + "Z"
+        db.complete_build(build_id, completed_at)
+        
+        console.print(f"[green]Build complete. Workspace: {workspace_path}[/green]")
+        
+    except Exception as e:
+        console.print(f"[red]Build failed: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def builds() -> None:
+    """List all build sessions."""
+    print_banner()
+    
+    builds = db.get_all_builds()
+    
+    if not builds:
+        console.print("No builds yet.")
+        return
+    
+    table = Table(title="Build Sessions")
+    table.add_column("ID", style="cyan")
+    table.add_column("Session", style="green")
+    table.add_column("Workspace", style="white")
+    table.add_column("Status", style="yellow")
+    table.add_column("Started", style="blue")
+    table.add_column("Completed", style="blue")
+    
+    for build in builds:
+        build_id = build["id"][:8]  # First 8 chars
+        session_id = build["session_id"][:8]  # First 8 chars
+        workspace = Path(build["workspace"]).name  # Just the folder name
+        status = "[green]completed[/green]" if build["status"] == "completed" else "[yellow]in_progress[/yellow]"
+        started = build["started_at"][:19].replace("T", " ")
+        completed = build["completed_at"][:19].replace("T", " ") if build["completed_at"] else "N/A"
+        
+        table.add_row(build_id, session_id, workspace, status, started, completed)
+    
+    console.print(table)
+
+
+@app.command()
+def workspace(session_id: str) -> None:
+    """Get the workspace path for a session."""
+    build = db.get_build_by_session(session_id)
+    
+    if not build:
+        console.print(f"[red]No build found for session {session_id}[/red]")
+        raise typer.Exit(1)
+    
+    # Print just the workspace path (no markup) for shell scripting
+    print(build["workspace"])
 
 
 @app.callback(invoke_without_command=True)

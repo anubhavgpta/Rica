@@ -45,6 +45,19 @@ class Database:
                 )
             """)
             
+            # Create builds table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS builds (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    workspace TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'in_progress',
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    FOREIGN KEY (session_id) REFERENCES sessions (id)
+                )
+            """)
+            
             conn.commit()
     
     def create_session(self, session_id: str, goal: str, language: str) -> None:
@@ -117,6 +130,67 @@ class Database:
             
             columns = [desc[0] for desc in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    
+    def insert_build(self, build_id: str, session_id: str, workspace: str, started_at: str) -> None:
+        """Insert a new build record."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                INSERT INTO builds (id, session_id, workspace, status, started_at)
+                VALUES (?, ?, ?, 'in_progress', ?)
+            """, (build_id, session_id, workspace, started_at))
+            conn.commit()
+    
+    def complete_build(self, build_id: str, completed_at: str) -> None:
+        """Mark a build as completed."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                UPDATE builds SET status = 'completed', completed_at = ?
+                WHERE id = ?
+            """, (completed_at, build_id))
+            conn.commit()
+    
+    def get_build_by_session(self, session_id: str) -> Optional[dict]:
+        """Get the latest build for a session."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                SELECT id, session_id, workspace, status, started_at, completed_at
+                FROM builds
+                WHERE session_id = ?
+                ORDER BY started_at DESC
+                LIMIT 1
+            """, (session_id,))
+            result = cursor.fetchone()
+            if result:
+                columns = [desc[0] for desc in cursor.description]
+                return dict(zip(columns, result))
+            return None
+    
+    def get_all_builds(self) -> list[dict]:
+        """Get all builds."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                SELECT id, session_id, workspace, status, started_at, completed_at
+                FROM builds
+                ORDER BY started_at DESC
+            """)
+            columns = [desc[0] for desc in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    
+    def get_plan_for_session(self, session_id: str) -> Optional[dict]:
+        """Get the approved plan for a session."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                SELECT id, plan_json, approved
+                FROM plans
+                WHERE session_id = ? AND approved = 1
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (session_id,))
+            result = cursor.fetchone()
+            if result:
+                columns = [desc[0] for desc in cursor.description]
+                return dict(zip(columns, result))
+            return None
 
 
 # Global database instance
