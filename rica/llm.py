@@ -1,0 +1,40 @@
+"""LLM client wrapper for Gemini 2.5 Flash."""
+
+from typing import Optional
+
+import google.genai
+from google.genai import types
+from rich.console import Console
+
+from .config import GEMINI_API_KEY, validate_config
+
+console = Console()
+
+
+class LLMClient:
+    """Gemini 2.5 Flash client wrapper."""
+    
+    def __init__(self) -> None:
+        """Initialize the Gemini client."""
+        validate_config()
+        self.client = google.genai.Client(api_key=GEMINI_API_KEY)
+        self.model = "gemini-2.5-flash"
+    
+    def generate(self, system_prompt: str, user_prompt: str) -> str:
+        """Generate content using Gemini 2.5 Flash."""
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=user_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                )
+            )
+            return response.text
+        except Exception as e:
+            console.print(f"[red]Error calling Gemini API: {e}[/red]")
+            raise
+
+
+# Global LLM client instance
+llm = LLMClient()

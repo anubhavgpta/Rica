@@ -1,0 +1,217 @@
+"""Main CLI interface for Rica."""
+
+import json
+import uuid
+from pathlib import Path
+from typing import Optional
+
+import typer
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.tree import Tree
+
+from .config import PLANS_DIR
+from .db import db
+from .models import BuildPlan
+from .planner import create_plan
+
+app = typer.Typer(help="Rica - Language-Agnostic Autonomous Coding Agent")
+console = Console()
+
+
+def print_banner() -> None:
+    """Print Rica banner."""
+    banner = """
+    ╔═══════════════════════════════════════╗
+    ║           RICA v0.1.0                 ║
+    ║     Language-Agnostic Coding Agent    ║
+    ╚═══════════════════════════════════════╝
+    """
+    console.print(Panel(banner.strip(), border_style="blue"))
+
+
+def display_plan(plan: BuildPlan) -> None:
+    """Display a plan beautifully using Rich."""
+    # Main panel with goal and language
+    info_text = f"Language: [bold green]{plan.language}[/bold green]\n"
+    info_text += f"Files: [bold blue]{plan.estimated_files}[/bold blue]\n"
+    info_text += f"Session: [bold cyan]{plan.session_id}[/bold cyan]"
+    
+    console.print(Panel(
+        f"[bold]{plan.goal}[/bold]\n\n{info_text}",
+        title="📋 Build Plan",
+        border_style="green"
+    ))
+    
+    # Rationale
+    if plan.rationale:
+        console.print(Panel(
+            plan.rationale,
+            title="🤔 Rationale",
+            border_style="yellow"
+        ))
+    
+    # Milestones table
+    if plan.milestones:
+        table = Table(title="🎯 Milestones")
+        table.add_column("Milestone", style="cyan")
+        table.add_column("Files", justify="right", style="blue")
+        table.add_column("Description", style="white")
+        
+        for milestone in plan.milestones:
+            table.add_row(
+                milestone.name,
+                str(len(milestone.files)),
+                milestone.description[:80] + "..." if len(milestone.description) > 80 else milestone.description
+            )
+        
+        console.print(table)
+    
+    # File tree
+    if plan.milestones:
+        tree = Tree("📁 Project Structure")
+        for milestone in plan.milestones:
+            milestone_node = tree.add(f"🎯 {milestone.name}")
+            for file_plan in milestone.files:
+                file_node = milestone_node.add(f"📄 {file_plan.path}")
+                file_node.add(f"💬 {file_plan.description}")
+                if file_plan.dependencies:
+                    file_node.add(f"📦 Dependencies: {', '.join(file_plan.dependencies)}")
+        
+        console.print(tree)
+    
+    # Install commands
+    if plan.install_commands:
+        console.print(Panel(
+            "\n".join(f"$ {cmd}" for cmd in plan.install_commands),
+            title="🔧 Install Commands",
+            border_style="magenta"
+        ))
+    
+    # Notes
+    if plan.notes:
+        console.print(Panel(
+            plan.notes,
+            title="📝 Notes",
+            border_style="cyan"
+        ))
+
+
+@app.command()
+def plan(
+    goal: str = typer.Argument(..., help="Your coding goal"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Auto-approve the plan"),
+    lang: Optional[str] = typer.Option(None, "--lang", "-l", help="Preferred language"),
+) -> None:
+    """Create a new build plan."""
+    print_banner()
+    
+    # Generate session ID
+    session_id = str(uuid.uuid4())[:8]
+    
+    try:
+        # Create the plan
+        plan_obj = create_plan(goal, session_id)
+        
+        # Override language if specified
+        if lang:
+            plan_obj.language = lang
+        
+        # Create session in database
+        db.create_session(session_id, goal, plan_obj.language)
+        
+        # Display the plan
+        display_plan(plan_obj)
+        
+        # Handle approval
+        if yes:
+            console.print("✅ Plan auto-approved")
+            db.update_plan_approval(session_id, True)
+            console.print(f"✅ Plan saved to {PLANS_DIR / f'{session_id}.json'}")
+        else:
+            response = typer.confirm("Proceed with this plan?", default=False)
+            if response:
+                console.print("✅ Plan approved")
+                db.update_plan_approval(session_id, True)
+                console.print(f"✅ Plan saved to {PLANS_DIR / f'{session_id}.json'}")
+            else:
+                console.print("❌ Plan discarded")
+                return
+        
+        console.print(f"Session: {session_id}")
+        
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def plans() -> None:
+    """List all saved plans."""
+    print_banner()
+    
+    sessions = db.list_sessions()
+    
+    if not sessions:
+        console.print("No saved plans found.")
+        return
+    
+    table = Table(title="📋 Saved Plans")
+    table.add_column("Session ID", style="cyan")
+    table.add_column("Goal", style="white")
+    table.add_column("Language", style="green")
+    table.add_column("Status", style="yellow")
+    table.add_column("Created", style="blue")
+    
+    for session in sessions:
+        goal = session["goal"][:60] + "..." if len(session["goal"]) > 60 else session["goal"]
+        status = "✅ Approved" if session["approved"] else "⏳ Pending"
+        created = session["created_at"][:19].replace("T", " ")
+        
+        table.add_row(
+            session["id"],
+            goal,
+            session["language"],
+            status,
+            created
+        )
+    
+    console.print(table)
+
+
+@app.command()
+def show(session_id: str) -> None:
+    """Show details of a saved plan."""
+    print_banner()
+    
+    # Load plan from file
+    plan_file = PLANS_DIR / f"{session_id}.json"
+    if not plan_file.exists():
+        console.print(f"[red]Plan not found: {session_id}[/red]")
+        raise typer.Exit(1)
+    
+    try:
+        with open(plan_file, "r", encoding="utf-8") as f:
+            plan_data = json.load(f)
+        plan = BuildPlan.model_validate(plan_data)
+        display_plan(plan)
+    except Exception as e:
+        console.print(f"[red]Error loading plan: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def version() -> None:
+    """Show Rica version."""
+    console.print("Rica v0.1.0 — Language-Agnostic Coding Agent")
+
+
+@app.callback()
+def main() -> None:
+    """Rica - Language-Agnostic Autonomous Coding Agent."""
+    pass
+
+
+if __name__ == "__main__":
+    app()
