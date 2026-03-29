@@ -75,6 +75,34 @@ class Database:
                 )
             """)
             
+            # Create debug_sessions table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS debug_sessions (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    iterations INTEGER DEFAULT 0,
+                    final_status TEXT NOT NULL DEFAULT 'in_progress',
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id)
+                )
+            """)
+            
+            # Create debug_iterations table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS debug_iterations (
+                    id TEXT PRIMARY KEY,
+                    debug_session_id TEXT NOT NULL,
+                    iteration INTEGER NOT NULL,
+                    error_class TEXT,
+                    implicated_files TEXT,
+                    check_passed INTEGER,
+                    run_exit_code INTEGER,
+                    fixed_at TEXT,
+                    FOREIGN KEY (debug_session_id) REFERENCES debug_sessions(id)
+                )
+            """)
+            
             conn.commit()
     
     def create_session(self, session_id: str, goal: str, language: str) -> None:
@@ -230,6 +258,72 @@ class Database:
             ))
             conn.commit()
         return execution_id
+
+    def insert_debug_session(self, debug_session_id: str, session_id: str, started_at: str) -> None:
+        """Insert a new debug session record."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                INSERT INTO debug_sessions (id, session_id, started_at)
+                VALUES (?, ?, ?)
+            """, (debug_session_id, session_id, started_at))
+            conn.commit()
+
+    def insert_debug_iteration(
+        self,
+        id: str,
+        debug_session_id: str,
+        iteration: int,
+        error_class: str,
+        implicated_files: str,  # JSON-encoded list
+        check_passed: int,
+        run_exit_code: int | None,
+        fixed_at: str,
+    ) -> None:
+        """Insert a new debug iteration record."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                INSERT INTO debug_iterations (
+                    id, debug_session_id, iteration, error_class, implicated_files, 
+                    check_passed, run_exit_code, fixed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (id, debug_session_id, iteration, error_class, implicated_files, check_passed, run_exit_code, fixed_at))
+            conn.commit()
+
+    def complete_debug_session(self, debug_session_id: str, final_status: str, completed_at: str) -> None:
+        """Mark a debug session as completed."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                UPDATE debug_sessions 
+                SET final_status = ?, completed_at = ?, 
+                    iterations = (SELECT COUNT(*) FROM debug_iterations WHERE debug_session_id = ?)
+                WHERE id = ?
+            """, (final_status, completed_at, debug_session_id, debug_session_id))
+            conn.commit()
+
+    def get_debug_sessions_for_session(self, session_id: str) -> list[dict]:
+        """Get all debug sessions for a given session."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                SELECT id, session_id, iterations, final_status, started_at, completed_at
+                FROM debug_sessions
+                WHERE session_id = ?
+                ORDER BY started_at DESC
+            """, (session_id,))
+            columns = [desc[0] for desc in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def get_debug_iterations_for_session(self, debug_session_id: str) -> list[dict]:
+        """Get all debug iterations for a debug session."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                SELECT id, debug_session_id, iteration, error_class, implicated_files, 
+                       check_passed, run_exit_code, fixed_at
+                FROM debug_iterations
+                WHERE debug_session_id = ?
+                ORDER BY iteration ASC
+            """, (debug_session_id,))
+            columns = [desc[0] for desc in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
 # Global database instance

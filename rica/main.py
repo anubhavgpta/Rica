@@ -16,11 +16,12 @@ from rich.tree import Tree
 from .config import PLANS_DIR, RICA_HOME
 from .codegen import build_project
 from .db import db
+from .debugger import classify_error, generate_fix
 from .executor import detect_server, run_command
 from .llm import llm
 from .models import BuildPlan
 from .planner import create_plan
-from .registry import get_language_config
+from .registry import get_language_config, LANGUAGE_REGISTRY
 
 app = typer.Typer(help="Rica - Language-Agnostic Autonomous Coding Agent")
 console = Console()
@@ -582,6 +583,304 @@ def test(session_id: str) -> None:
         ))
     except Exception as e:
         console.print(f"[yellow]Could not generate interpretation: {e}[/yellow]")
+
+
+@app.command()
+def debug(
+    session_id: str = typer.Argument(..., help="Session ID to debug"),
+    max_iter: int = typer.Option(5, "--max-iter", help="Maximum debug iterations"),
+    timeout: int = typer.Option(30, "--timeout", help="Timeout per run in seconds"),
+) -> None:
+    """Debug a session using autonomous fix generation."""
+    print_banner()
+    
+    # Load plan
+    plan_file = PLANS_DIR / f"{session_id}.json"
+    if not plan_file.exists():
+        console.print(f"[red]Plan not found: {session_id}[/red]")
+        raise typer.Exit(1)
+    
+    try:
+        with open(plan_file, "r", encoding="utf-8") as f:
+            plan_data = json.load(f)
+        plan = BuildPlan.model_validate(plan_data)
+    except Exception as e:
+        console.print(f"[red]Error loading plan: {e}[/red]")
+        raise typer.Exit(1)
+    
+    # Get workspace
+    build = db.get_build_by_session(session_id)
+    if not build:
+        console.print(f"[red]No completed build found for session {session_id}[/red]")
+        raise typer.Exit(1)
+    
+    workspace = Path(build["workspace"])
+    
+    # Check for resumability
+    debug_sessions = db.get_debug_sessions_for_session(session_id)
+    in_progress_sessions = [s for s in debug_sessions if s["final_status"] == "in_progress"]
+    
+    if in_progress_sessions:
+        debug_session_id = in_progress_sessions[0]["id"]
+        start_iteration = len(db.get_debug_iterations_for_session(debug_session_id))
+        console.print(f"[dim]Resuming debug session from iteration {start_iteration}[/dim]")
+    else:
+        debug_session_id = str(uuid.uuid4())
+        started_at = datetime.utcnow().isoformat() + "Z"
+        db.insert_debug_session(debug_session_id, session_id, started_at)
+        start_iteration = 0
+    
+    # Get language config
+    try:
+        config = get_language_config(plan.language.lower())
+        check_cmd = config.get("check_cmd")
+        run_cmd = config.get("run_cmd")
+    except ValueError:
+        console.print(f"[red]Unsupported language: {plan.language}[/red]")
+        raise typer.Exit(1)
+    
+    if not check_cmd:
+        console.print(f"[yellow]No check command configured for {plan.language}[/yellow]")
+        raise typer.Exit(0)
+    
+    if not run_cmd:
+        console.print(f"[yellow]No run command configured for {plan.language}[/yellow]")
+        raise typer.Exit(0)
+    
+    # Run initial check
+    console.print("[dim]Running initial check...[/dim]")
+    if "{file}" in " ".join(check_cmd):
+        extension = config.get("extension", "")
+        pattern = f"*{extension}"
+        files = list(workspace.rglob(pattern))
+        if not files:
+            console.print(f"[red]No {extension} files found in workspace[/red]")
+            raise typer.Exit(1)
+        initial_check_cmd = [arg.replace("{file}", str(files[0])) for arg in check_cmd]
+    else:
+        initial_check_cmd = check_cmd
+    
+    check_result = run_command(initial_check_cmd, workspace, timeout=timeout, console=console)
+    
+    # Resolve run command (needed for both initial run and debug loop)
+    if "{file}" in " ".join(run_cmd):
+        extension = config.get("extension", "")
+        pattern = f"*{extension}"
+        files = list(workspace.rglob(pattern))
+        if not files:
+            console.print(f"[red]No {extension} files found in workspace[/red]")
+            raise typer.Exit(1)
+        resolved_run_cmd = [arg.replace("{file}", str(files[0])) for arg in run_cmd]
+    else:
+        resolved_run_cmd = run_cmd
+    
+    # Detect server and set timeout
+    is_server = detect_server(workspace, plan.language.lower())
+    effective_timeout = min(timeout, 60) if not is_server else timeout
+    
+    # If check passes, try running
+    if check_result.exit_code == 0:
+        console.print("[dim]Check passed, running project...[/dim]")
+        
+        run_result = run_command(resolved_run_cmd, workspace, effective_timeout, console=console)
+        
+        if run_result.exit_code == 0:
+            console.print("[green]Project runs successfully. No debug needed.[/green]")
+            completed_at = datetime.utcnow().isoformat() + "Z"
+            db.complete_debug_session(debug_session_id, "success", completed_at)
+            return
+    
+    # Debug loop
+    for iteration in range(start_iteration, max_iter):
+        console.print(f"[dim]--- Iteration {iteration + 1} / {max_iter} ---[/dim]")
+        
+        # Run check
+        check_result = run_command(initial_check_cmd, workspace, timeout=timeout, console=console)
+        
+        # Classify error
+        error = classify_error(
+            check_result.stdout, 
+            check_result.stderr, 
+            plan.language, 
+            check_result.timed_out
+        )
+        
+        # Get implicated files
+        implicated_files = error.implicated_files
+        if not implicated_files and check_result.stderr:
+            # Try to extract from run result if check doesn't have files
+            run_error = classify_error(
+                check_result.stdout,
+                check_result.stderr,
+                plan.language,
+                check_result.timed_out
+            )
+            implicated_files = run_error.implicated_files
+        
+        if not implicated_files:
+            console.print("[yellow]Warning: No implicated files found, using all source files[/yellow]")
+            extension = config.get("extension", "")
+            if extension:
+                implicated_files = [str(p.relative_to(workspace)) for p in workspace.rglob(f"*{extension}")]
+        
+        # Fix each implicated file
+        for file_name in implicated_files:
+            file_path = workspace / file_name
+            if not file_path.exists():
+                console.print(f"[yellow]Warning: File not found: {file_name}[/yellow]")
+                continue
+            
+            console.print(f"[dim]Fixing: {file_name}[/dim]")
+            fixed_content = generate_fix(error, file_path, workspace, plan, console)
+            
+            # Write fixed content
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(fixed_content)
+            except Exception as e:
+                console.print(f"[red]Error writing file {file_name}: {e}[/red]")
+        
+        # Re-run check
+        recheck_result = run_command(initial_check_cmd, workspace, timeout=timeout, console=console)
+        check_passed = recheck_result.exit_code == 0
+        
+        # Re-run run
+        run_result = run_command(resolved_run_cmd, workspace, effective_timeout, console=console)
+        
+        # Persist iteration
+        iteration_id = str(uuid.uuid4())
+        fixed_at = datetime.utcnow().isoformat() + "Z"
+        db.insert_debug_iteration(
+            id=iteration_id,
+            debug_session_id=debug_session_id,
+            iteration=iteration,
+            error_class=error.category,
+            implicated_files=json.dumps(error.implicated_files),
+            check_passed=int(check_passed),
+            run_exit_code=run_result.exit_code,
+            fixed_at=fixed_at,
+        )
+        
+        # Check if successful
+        if run_result.exit_code == 0:
+            completed_at = datetime.utcnow().isoformat() + "Z"
+            db.complete_debug_session(debug_session_id, "success", completed_at)
+            
+            console.print(Panel(
+                "[green]Debug successful![/green]",
+                title="Success",
+                border_style="green"
+            ))
+            break
+    
+    # If loop exhausted
+    else:
+        completed_at = datetime.utcnow().isoformat() + "Z"
+        db.complete_debug_session(debug_session_id, "max_iterations_reached", completed_at)
+        console.print(f"[yellow]Max iterations reached ({max_iter}). Review errors manually.[/yellow]")
+    
+    # Show summary table
+    console.print("─" * 80, style="dim")
+    console.print("Debug Summary", style="bold")
+    console.print("─" * 80, style="dim")
+    
+    iterations = db.get_debug_iterations_for_session(debug_session_id)
+    if iterations:
+        summary_table = Table()
+        summary_table.add_column("Iteration", style="cyan")
+        summary_table.add_column("Error Class", style="yellow")
+        summary_table.add_column("Files Fixed", style="white")
+        summary_table.add_column("Check", style="green")
+        summary_table.add_column("Run Result", style="blue")
+        
+        for iteration_data in iterations:
+            files = json.loads(iteration_data["implicated_files"]) if iteration_data["implicated_files"] else []
+            files_text = f"{len(files)} files" if files else "None"
+            check_text = "[green]PASS[/green]" if iteration_data["check_passed"] else "[red]FAIL[/red]"
+            run_text = "[green]SUCCESS[/green]" if iteration_data["run_exit_code"] == 0 else f"[red]FAIL({iteration_data['run_exit_code']})[/red]"
+            
+            summary_table.add_row(
+                str(iteration_data["iteration"] + 1),
+                iteration_data["error_class"] or "unknown",
+                files_text,
+                check_text,
+                run_text
+            )
+        
+        console.print(summary_table)
+
+
+@app.command()
+def debug_history(
+    session_id: str = typer.Argument(..., help="Session ID"),
+) -> None:
+    """Show debug history for a session."""
+    print_banner()
+    
+    debug_sessions = db.get_debug_sessions_for_session(session_id)
+    
+    if not debug_sessions:
+        console.print(f"[yellow]No debug sessions found for {session_id}[/yellow]")
+        return
+    
+    console.print("─" * 80, style="dim")
+    console.print("Debug Sessions", style="bold")
+    console.print("─" * 80, style="dim")
+    
+    # Debug sessions table
+    sessions_table = Table()
+    sessions_table.add_column("Debug Session ID", style="cyan")
+    sessions_table.add_column("Started At", style="white")
+    sessions_table.add_column("Completed At", style="white")
+    sessions_table.add_column("Status", style="yellow")
+    sessions_table.add_column("Iterations", style="blue")
+    
+    for session in debug_sessions:
+        session_id_short = session["id"][:8]
+        started = session["started_at"][:19].replace("T", " ")
+        completed = session["completed_at"][:19].replace("T", " ") if session["completed_at"] else "N/A"
+        status = session["final_status"]
+        iterations = str(session["iterations"])
+        
+        sessions_table.add_row(session_id_short, started, completed, status, iterations)
+    
+    console.print(sessions_table)
+    
+    # Debug iterations for each session
+    for session in debug_sessions:
+        console.print()
+        console.print(f"[dim]Debug Session {session['id'][:8]} - Iterations[/dim]")
+        console.print("─" * 80, style="dim")
+        
+        iterations = db.get_debug_iterations_for_session(session["id"])
+        if iterations:
+            iterations_table = Table()
+            iterations_table.add_column("Iter #", style="cyan")
+            iterations_table.add_column("Error Class", style="yellow")
+            iterations_table.add_column("Files Fixed", style="white")
+            iterations_table.add_column("Check", style="green")
+            iterations_table.add_column("Run Exit Code", style="blue")
+            iterations_table.add_column("Fixed At", style="dim")
+            
+            for iteration in iterations:
+                files = json.loads(iteration["implicated_files"]) if iteration["implicated_files"] else []
+                files_text = f"{len(files)} files" if files else "None"
+                check_text = "[green]PASS[/green]" if iteration["check_passed"] else "[red]FAIL[/red]"
+                run_exit = str(iteration["run_exit_code"]) if iteration["run_exit_code"] is not None else "N/A"
+                fixed_at = iteration["fixed_at"][:19].replace("T", " ") if iteration["fixed_at"] else "N/A"
+                
+                iterations_table.add_row(
+                    str(iteration["iteration"] + 1),
+                    iteration["error_class"] or "unknown",
+                    files_text,
+                    check_text,
+                    run_exit,
+                    fixed_at
+                )
+            
+            console.print(iterations_table)
+        else:
+            console.print("[dim]No iterations recorded[/dim]")
 
 
 @app.callback(invoke_without_command=True)

@@ -48,3 +48,11 @@ class ExecutionResult(BaseModel):
     stderr: str
     timed_out: bool
     executed_at: str
+
+
+class ErrorClass(BaseModel):
+    """Classification of an error for debugging."""
+    category: str  # "compile_error" | "runtime_error" | "import_error" | "type_error" | "assertion_error" | "timeout" | "unknown"
+    implicated_files: list[str]
+    error_summary: str
+    raw_stderr: str
