@@ -16,12 +16,18 @@ class LLMClient:
     
     def __init__(self) -> None:
         """Initialize the Gemini client."""
-        validate_config()
-        self.client = google.genai.Client(api_key=GEMINI_API_KEY)
+        self.client = None
         self.model = "gemini-2.5-flash"
+    
+    def _ensure_client(self) -> None:
+        """Ensure the client is initialized."""
+        if self.client is None:
+            validate_config()
+            self.client = google.genai.Client(api_key=GEMINI_API_KEY)
     
     def generate(self, system_prompt: str, user_prompt: str) -> str:
         """Generate content using Gemini 2.5 Flash."""
+        self._ensure_client()
         try:
             response = self.client.models.generate_content(
                 model=self.model,

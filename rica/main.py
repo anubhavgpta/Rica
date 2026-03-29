@@ -22,13 +22,23 @@ console = Console()
 
 def print_banner() -> None:
     """Print Rica banner."""
-    banner = """
-    ╔═══════════════════════════════════════╗
-    ║           RICA v0.1.0                 ║
-    ║     Language-Agnostic Coding Agent    ║
-    ╚═══════════════════════════════════════╝
-    """
-    console.print(Panel(banner.strip(), border_style="blue"))
+    banner = r"""                   _..._               
+                .-'_..._''.            
+        .--.  .' .'      '.\           
+        |__| / .'                      
+.-,.--. .--.. '                        
+|  .-. ||  || |                 __     
+| |  | ||  || |              .:--.'.   
+| |  | ||  |. '             / |   \ |  
+| |  '- |  | \ '.          .`" __ | |  
+| |     |__|  '. `._____.-'/ .'.''| |  
+| |             `-.______ / / /   | |_ 
+|_|                      `  \\._,\ '/ 
+                             `--'  """
+    
+    console.print(banner, style="bold white")
+    console.print("Language-Agnostic Coding Agent  v0.1.0", style="dim")
+    console.print("─" * 80, style="dim")
 
 
 def display_plan(plan: BuildPlan) -> None:
@@ -40,21 +50,25 @@ def display_plan(plan: BuildPlan) -> None:
     
     console.print(Panel(
         f"[bold]{plan.goal}[/bold]\n\n{info_text}",
-        title="📋 Build Plan",
-        border_style="green"
+        title="Build Plan",
+        border_style="dim"
     ))
     
     # Rationale
     if plan.rationale:
         console.print(Panel(
             plan.rationale,
-            title="🤔 Rationale",
-            border_style="yellow"
+            title="Rationale",
+            border_style="dim"
         ))
     
     # Milestones table
     if plan.milestones:
-        table = Table(title="🎯 Milestones")
+        console.print("─" * 80, style="dim")
+        console.print("Milestones", style="bold")
+        console.print("─" * 80, style="dim")
+        
+        table = Table(show_header=True, header_style="bold blue")
         table.add_column("Milestone", style="cyan")
         table.add_column("Files", justify="right", style="blue")
         table.add_column("Description", style="white")
@@ -70,14 +84,18 @@ def display_plan(plan: BuildPlan) -> None:
     
     # File tree
     if plan.milestones:
-        tree = Tree("📁 Project Structure")
+        console.print("─" * 80, style="dim")
+        console.print("Project Structure", style="bold")
+        console.print("─" * 80, style="dim")
+        
+        tree = Tree("Project Structure")
         for milestone in plan.milestones:
-            milestone_node = tree.add(f"🎯 {milestone.name}")
+            milestone_node = tree.add(f"{milestone.name}")
             for file_plan in milestone.files:
-                file_node = milestone_node.add(f"📄 {file_plan.path}")
-                file_node.add(f"💬 {file_plan.description}")
+                file_node = milestone_node.add(f"{file_plan.path}")
+                file_node.add(f"{file_plan.description}")
                 if file_plan.dependencies:
-                    file_node.add(f"📦 Dependencies: {', '.join(file_plan.dependencies)}")
+                    file_node.add(f"Deps: {', '.join(file_plan.dependencies)}")
         
         console.print(tree)
     
@@ -85,16 +103,16 @@ def display_plan(plan: BuildPlan) -> None:
     if plan.install_commands:
         console.print(Panel(
             "\n".join(f"$ {cmd}" for cmd in plan.install_commands),
-            title="🔧 Install Commands",
-            border_style="magenta"
+            title="Install Commands",
+            border_style="dim"
         ))
     
     # Notes
     if plan.notes:
         console.print(Panel(
             plan.notes,
-            title="📝 Notes",
-            border_style="cyan"
+            title="Notes",
+            border_style="dim"
         ))
 
 
@@ -126,17 +144,17 @@ def plan(
         
         # Handle approval
         if yes:
-            console.print("✅ Plan auto-approved")
+            console.print("[green]Plan auto-approved (--yes)[/green]")
             db.update_plan_approval(session_id, True)
-            console.print(f"✅ Plan saved to {PLANS_DIR / f'{session_id}.json'}")
+            console.print(f"[green]Saved:[/green] {PLANS_DIR / f'{session_id}.json'}")
         else:
             response = typer.confirm("Proceed with this plan?", default=False)
             if response:
-                console.print("✅ Plan approved")
+                console.print("[green]Plan approved[/green]")
                 db.update_plan_approval(session_id, True)
-                console.print(f"✅ Plan saved to {PLANS_DIR / f'{session_id}.json'}")
+                console.print(f"[green]Saved:[/green] {PLANS_DIR / f'{session_id}.json'}")
             else:
-                console.print("❌ Plan discarded")
+                console.print("[dim]Plan discarded[/dim]")
                 return
         
         console.print(f"Session: {session_id}")
@@ -157,7 +175,7 @@ def plans() -> None:
         console.print("No saved plans found.")
         return
     
-    table = Table(title="📋 Saved Plans")
+    table = Table(title="Saved Plans")
     table.add_column("Session ID", style="cyan")
     table.add_column("Goal", style="white")
     table.add_column("Language", style="green")
@@ -166,7 +184,7 @@ def plans() -> None:
     
     for session in sessions:
         goal = session["goal"][:60] + "..." if len(session["goal"]) > 60 else session["goal"]
-        status = "✅ Approved" if session["approved"] else "⏳ Pending"
+        status = "[green]Approved[/green]" if session["approved"] else "[dim]Pending[/dim]"
         created = session["created_at"][:19].replace("T", " ")
         
         table.add_row(
@@ -201,16 +219,15 @@ def show(session_id: str) -> None:
         raise typer.Exit(1)
 
 
-@app.command()
-def version() -> None:
-    """Show Rica version."""
-    console.print("Rica v0.1.0 — Language-Agnostic Coding Agent")
-
-
-@app.callback()
-def main() -> None:
+@app.callback(invoke_without_command=True)
+def main(
+    ctx: typer.Context,
+    version: bool = typer.Option(False, "--version", "-v", help="Show Rica version")
+) -> None:
     """Rica - Language-Agnostic Autonomous Coding Agent."""
-    pass
+    if version or ctx.invoked_subcommand is None:
+        console.print("Rica v0.1.0 — Language-Agnostic Coding Agent")
+        raise typer.Exit()
 
 
 if __name__ == "__main__":

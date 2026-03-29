@@ -80,13 +80,22 @@ class Database:
     def update_plan_approval(self, session_id: str, approved: bool) -> None:
         """Update plan approval status."""
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                UPDATE plans SET approved = ? 
+            # First get the latest plan ID for this session
+            cursor = conn.execute("""
+                SELECT id FROM plans 
                 WHERE session_id = ? 
                 ORDER BY created_at DESC 
                 LIMIT 1
-            """, (1 if approved else 0, session_id))
-            conn.commit()
+            """, (session_id,))
+            result = cursor.fetchone()
+            
+            if result:
+                plan_id = result[0]
+                conn.execute("""
+                    UPDATE plans SET approved = ? 
+                    WHERE id = ?
+                """, (1 if approved else 0, plan_id))
+                conn.commit()
     
     def list_sessions(self) -> list[dict]:
         """List all sessions with their latest plan status."""
@@ -98,11 +107,11 @@ class Database:
                     s.language,
                     s.status,
                     s.created_at,
-                    p.approved
+                    (SELECT approved FROM plans 
+                     WHERE session_id = s.id 
+                     ORDER BY created_at DESC 
+                     LIMIT 1) as approved
                 FROM sessions s
-                LEFT JOIN plans p ON s.id = p.session_id
-                LEFT JOIN plans p2 ON s.id = p2.session_id AND p.created_at < p2.created_at
-                WHERE p2.id IS NULL
                 ORDER BY s.created_at DESC
             """)
             

@@ -28,3 +28,12 @@ def validate_config() -> None:
         raise ValueError(
             "GEMINI_API_KEY is required. Set it in your environment or .env file."
         )
+
+def get_config() -> dict:
+    """Get current configuration status."""
+    return {
+        "gemini_api_key": bool(GEMINI_API_KEY),
+        "rica_home": str(RICA_HOME),
+        "plans_dir": str(PLANS_DIR),
+        "db_path": str(DB_PATH),
+    }
