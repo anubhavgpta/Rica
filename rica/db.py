@@ -1,11 +1,13 @@
 """Database management for Rica using SQLite with WAL mode."""
 
 import sqlite3
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from .config import DB_PATH
+from .models import ExecutionResult
 
 
 class Database:
@@ -54,7 +56,22 @@ class Database:
                     status TEXT NOT NULL DEFAULT 'in_progress',
                     started_at TEXT NOT NULL,
                     completed_at TEXT,
-                    FOREIGN KEY (session_id) REFERENCES sessions (id)
+                    FOREIGN KEY (session_id) REFERENCES sessions(id)
+                )
+            """)
+            
+            # Create executions table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS executions (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    command TEXT NOT NULL,
+                    exit_code INTEGER,
+                    stdout TEXT,
+                    stderr TEXT,
+                    timed_out INTEGER DEFAULT 0,
+                    executed_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id)
                 )
             """)
             
@@ -191,6 +208,28 @@ class Database:
                 columns = [desc[0] for desc in cursor.description]
                 return dict(zip(columns, result))
             return None
+    
+    def save_execution(self, result: ExecutionResult, session_id: str) -> str:
+        """Persist an ExecutionResult to the executions table. Returns the new row id."""
+        execution_id = str(uuid.uuid4())
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                INSERT INTO executions (
+                    id, session_id, command, exit_code, stdout, stderr, 
+                    timed_out, executed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                execution_id,
+                session_id,
+                " ".join(result.command),
+                result.exit_code,
+                result.stdout,
+                result.stderr,
+                1 if result.timed_out else 0,
+                result.executed_at
+            ))
+            conn.commit()
+        return execution_id
 
 
 # Global database instance

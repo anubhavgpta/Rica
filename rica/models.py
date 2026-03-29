@@ -38,3 +38,13 @@ class GeneratedFile(BaseModel):
     content: str
     language: str
     generated_at: str
+
+
+class ExecutionResult(BaseModel):
+    """Result of executing a command."""
+    command: list[str]
+    exit_code: int | None
+    stdout: str
+    stderr: str
+    timed_out: bool
+    executed_at: str

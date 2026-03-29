@@ -1,5 +1,6 @@
 """Main CLI interface for Rica."""
 
+import glob
 import json
 import uuid
 from datetime import datetime
@@ -15,8 +16,11 @@ from rich.tree import Tree
 from .config import PLANS_DIR, RICA_HOME
 from .codegen import build_project
 from .db import db
+from .executor import detect_server, run_command
+from .llm import llm
 from .models import BuildPlan
 from .planner import create_plan
+from .registry import get_language_config
 
 app = typer.Typer(help="Rica - Language-Agnostic Autonomous Coding Agent")
 console = Console()
@@ -362,6 +366,222 @@ def workspace(session_id: str) -> None:
     
     # Print just the workspace path (no markup) for shell scripting
     print(build["workspace"])
+
+
+@app.command()
+def check(session_id: str) -> None:
+    """Run compile/syntax check on a completed build."""
+    print_banner()
+    
+    # Load build
+    build = db.get_build_by_session(session_id)
+    if not build or build["status"] != "completed":
+        console.print("[red]Build not found or not completed. Run `rica build` first.[/red]")
+        raise typer.Exit(1)
+    
+    # Load session to get language
+    sessions = db.list_sessions()
+    session = next((s for s in sessions if s["id"] == session_id), None)
+    if not session:
+        console.print(f"[red]Session not found: {session_id}[/red]")
+        raise typer.Exit(1)
+    
+    language = session["language"].lower()
+    
+    # Get check command
+    try:
+        config = get_language_config(language)
+        check_cmd = config.get("check_cmd")
+    except ValueError:
+        console.print(f"[yellow]No check command configured for {language}[/yellow]")
+        raise typer.Exit(0)
+    
+    if not check_cmd:
+        console.print(f"[yellow]No check command configured for {language}[/yellow]")
+        raise typer.Exit(0)
+    
+    # Resolve {file} placeholder if needed
+    workspace = Path(build["workspace"])
+    if "{file}" in " ".join(check_cmd):
+        extension = config.get("extension", "")
+        pattern = f"*{extension}"
+        files = list(workspace.rglob(pattern))
+        if not files:
+            console.print(f"[red]No {extension} files found in workspace[/red]")
+            raise typer.Exit(1)
+        check_cmd = [arg.replace("{file}", str(files[0])) for arg in check_cmd]
+    
+    # Run check command
+    result = run_command(check_cmd, workspace, timeout=30, console=console)
+    
+    # Save execution
+    db.save_execution(result, session_id)
+    
+    # Display output
+    if result.stdout:
+        console.print(Panel(result.stdout, title="stdout", border_style="dim"))
+    if result.stderr:
+        console.print(Panel(result.stderr, title="stderr", border_style="dim"))
+    
+    # Show result
+    if result.exit_code == 0:
+        console.print("[green]PASS[/green]")
+    else:
+        console.print("[red]FAIL[/red]")
+
+
+@app.command()
+def run(session_id: str, timeout: int = typer.Option(10, "--timeout")) -> None:
+    """Execute the built project and interpret output with LLM."""
+    print_banner()
+    
+    # Load build
+    build = db.get_build_by_session(session_id)
+    if not build or build["status"] != "completed":
+        console.print("[red]Build not found or not completed. Run `rica build` first.[/red]")
+        raise typer.Exit(1)
+    
+    # Load session to get language
+    sessions = db.list_sessions()
+    session = next((s for s in sessions if s["id"] == session_id), None)
+    if not session:
+        console.print(f"[red]Session not found: {session_id}[/red]")
+        raise typer.Exit(1)
+    
+    language = session["language"].lower()
+    
+    # Get run command
+    try:
+        config = get_language_config(language)
+        run_cmd = config.get("run_cmd")
+    except ValueError:
+        console.print(f"[red]No run command configured for {language}[/red]")
+        raise typer.Exit(1)
+    
+    if not run_cmd:
+        console.print(f"[red]No run command configured for {language}[/red]")
+        raise typer.Exit(1)
+    
+    # Resolve {file} placeholder if needed
+    workspace = Path(build["workspace"])
+    if "{file}" in " ".join(run_cmd):
+        extension = config.get("extension", "")
+        pattern = f"*{extension}"
+        files = list(workspace.rglob(pattern))
+        if not files:
+            console.print(f"[red]No {extension} files found in workspace[/red]")
+            raise typer.Exit(1)
+        run_cmd = [arg.replace("{file}", str(files[0])) for arg in run_cmd]
+    
+    # Detect server and set timeout
+    is_server = detect_server(workspace, language)
+    if is_server:
+        effective_timeout = timeout
+        console.print(f"[dim]Detected server process — running with {timeout}s timeout[/dim]")
+    else:
+        effective_timeout = min(timeout, 60)
+    
+    # Run command
+    result = run_command(run_cmd, workspace, effective_timeout, console=console)
+    
+    # Save execution
+    db.save_execution(result, session_id)
+    
+    # Display output
+    if result.stdout:
+        console.print(Panel(result.stdout, title="stdout", border_style="dim"))
+    if result.stderr:
+        console.print(Panel(result.stderr, title="stderr", border_style="dim"))
+    
+    # LLM interpretation
+    try:
+        # Load executor prompt
+        prompt_path = Path(__file__).parent / "prompts" / "executor.txt"
+        executor_prompt = prompt_path.read_text().strip()
+        
+        user_msg = f"Exit code: {result.exit_code}\nTimed out: {result.timed_out}\nStdout:\n{result.stdout}\nStderr:\n{result.stderr}"
+        interpretation = llm.generate(system_prompt=executor_prompt, user_prompt=user_msg)
+        
+        console.print(Panel(
+            interpretation,
+            title="Execution Summary",
+            border_style="dim"
+        ))
+    except Exception as e:
+        console.print(f"[yellow]Could not generate interpretation: {e}[/yellow]")
+
+
+@app.command()
+def test(session_id: str) -> None:
+    """Run the test suite for a completed build."""
+    print_banner()
+    
+    # Load build
+    build = db.get_build_by_session(session_id)
+    if not build or build["status"] != "completed":
+        console.print("[red]Build not found or not completed. Run `rica build` first.[/red]")
+        raise typer.Exit(1)
+    
+    # Load session to get language
+    sessions = db.list_sessions()
+    session = next((s for s in sessions if s["id"] == session_id), None)
+    if not session:
+        console.print(f"[red]Session not found: {session_id}[/red]")
+        raise typer.Exit(1)
+    
+    language = session["language"].lower()
+    
+    # Get test command
+    try:
+        config = get_language_config(language)
+        test_cmd = config.get("test_cmd")
+    except ValueError:
+        console.print(f"[yellow]No test command configured for {language}[/yellow]")
+        raise typer.Exit(0)
+    
+    if not test_cmd:
+        console.print(f"[yellow]No test command configured for {language}[/yellow]")
+        raise typer.Exit(0)
+    
+    # Resolve {file} placeholder if needed (unlikely for test commands)
+    workspace = Path(build["workspace"])
+    if "{file}" in " ".join(test_cmd):
+        extension = config.get("extension", "")
+        pattern = f"*{extension}"
+        files = list(workspace.rglob(pattern))
+        if not files:
+            console.print(f"[red]No {extension} files found in workspace[/red]")
+            raise typer.Exit(1)
+        test_cmd = [arg.replace("{file}", str(files[0])) for arg in test_cmd]
+    
+    # Run test command (fixed 60s timeout)
+    result = run_command(test_cmd, workspace, timeout=60, console=console)
+    
+    # Save execution
+    db.save_execution(result, session_id)
+    
+    # Display output
+    if result.stdout:
+        console.print(Panel(result.stdout, title="stdout", border_style="dim"))
+    if result.stderr:
+        console.print(Panel(result.stderr, title="stderr", border_style="dim"))
+    
+    # LLM interpretation
+    try:
+        # Load executor prompt
+        prompt_path = Path(__file__).parent / "prompts" / "executor.txt"
+        executor_prompt = prompt_path.read_text().strip()
+        
+        user_msg = f"Exit code: {result.exit_code}\nTimed out: {result.timed_out}\nStdout:\n{result.stdout}\nStderr:\n{result.stderr}"
+        interpretation = llm.generate(system_prompt=executor_prompt, user_prompt=user_msg)
+        
+        console.print(Panel(
+            interpretation,
+            title="Execution Summary",
+            border_style="dim"
+        ))
+    except Exception as e:
+        console.print(f"[yellow]Could not generate interpretation: {e}[/yellow]")
 
 
 @app.callback(invoke_without_command=True)
