@@ -56,3 +56,20 @@ class ErrorClass(BaseModel):
     implicated_files: list[str]
     error_summary: str
     raw_stderr: str
+
+
+class ReviewIssue(BaseModel):
+    file: str
+    line: int | None = None
+    severity: str  # "error", "warning", "info"
+    category: str  # "bug", "security", "performance", "style", "maintainability", "unused_code"
+    description: str
+    suggestion: str
+
+
+class ReviewReport(BaseModel):
+    path: str
+    language: str
+    files_reviewed: int
+    issues: list[ReviewIssue]
+    summary: str

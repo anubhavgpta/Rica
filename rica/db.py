@@ -103,6 +103,20 @@ class Database:
                 )
             """)
             
+            # Create reviews table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS reviews (
+                    id TEXT PRIMARY KEY,
+                    path TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    files_reviewed INTEGER NOT NULL,
+                    issue_count INTEGER NOT NULL,
+                    error_count INTEGER NOT NULL,
+                    report_json TEXT NOT NULL,
+                    reviewed_at TEXT NOT NULL
+                )
+            """)
+            
             conn.commit()
     
     def create_session(self, session_id: str, goal: str, language: str) -> None:
@@ -324,6 +338,50 @@ class Database:
             """, (debug_session_id,))
             columns = [desc[0] for desc in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+def get_connection():
+    """Get a database connection."""
+    return sqlite3.connect(DB_PATH)
+
+
+def save_review(
+    id: str,
+    path: str,
+    language: str,
+    files_reviewed: int,
+    issue_count: int,
+    error_count: int,
+    report_json: str,
+    reviewed_at: str,
+) -> None:
+    conn = get_connection()
+    with conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO reviews
+            (id, path, language, files_reviewed, issue_count, error_count, report_json, reviewed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (id, path, language, files_reviewed, issue_count, error_count, report_json, reviewed_at),
+        )
+
+
+def get_reviews_for_path(path: str | None) -> list[dict]:
+    conn = get_connection()
+    if path:
+        rows = conn.execute(
+            "SELECT * FROM reviews WHERE path = ? ORDER BY reviewed_at DESC",
+            (path,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM reviews ORDER BY reviewed_at DESC"
+        ).fetchall()
+    
+    # Get column names from cursor description
+    columns = [description[0] for description in conn.execute("SELECT * FROM reviews LIMIT 1").description] if rows else []
+    return [dict(zip(columns, row)) for row in rows]
 
 
 # Global database instance

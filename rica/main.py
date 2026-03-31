@@ -1,5 +1,6 @@
 """Main CLI interface for Rica."""
 
+import difflib
 import glob
 import json
 import uuid
@@ -22,6 +23,9 @@ from .llm import llm
 from .models import BuildPlan
 from .planner import create_plan
 from .registry import get_language_config, LANGUAGE_REGISTRY
+from .reviewer import review_codebase, fix_file
+from .models import ReviewIssue, ReviewReport
+from .db import save_review, get_reviews_for_path
 
 app = typer.Typer(help="Rica - Language-Agnostic Autonomous Coding Agent")
 console = Console()
@@ -881,6 +885,213 @@ def debug_history(
             console.print(iterations_table)
         else:
             console.print("[dim]No iterations recorded[/dim]")
+
+
+def _display_review_report(report: ReviewReport, console: Console) -> None:
+    """Render a ReviewReport to the console using Rich."""
+    console.print(
+        Panel(
+            f"[dim]Language:[/dim] {report.language}   "
+            f"[dim]Files reviewed:[/dim] {report.files_reviewed}   "
+            f"[dim]Issues found:[/dim] {len(report.issues)}",
+            title=f"[dim]Review: {report.path}[/dim]",
+            border_style="dim",
+        )
+    )
+
+    console.print(
+        Panel(report.summary, title="[dim]Summary[/dim]", border_style="dim")
+    )
+
+    if not report.issues:
+        console.print("[dim]No issues found.[/dim]")
+        return
+
+    table = Table(border_style="dim", header_style="dim")
+    table.add_column("File")
+    table.add_column("Line", justify="right", width=6)
+    table.add_column("Severity", width=9)
+    table.add_column("Category", width=16)
+    table.add_column("Description")
+
+    severity_colors = {"error": "red", "warning": "yellow", "info": "dim"}
+
+    for issue in report.issues:
+        color = severity_colors.get(issue.severity, "dim")
+        table.add_row(
+            issue.file,
+            str(issue.line) if issue.line is not None else "-",
+            f"[{color}]{issue.severity}[/{color}]",
+            issue.category,
+            issue.description,
+        )
+
+    console.print(table)
+
+
+@app.command()
+def review(
+    path: str = typer.Argument(..., help="Path to the codebase directory to review"),
+    lang: str | None = typer.Option(None, "--lang", help="Language override"),
+) -> None:
+    """Analyze an existing codebase for issues."""
+    console = Console()
+    print_banner()
+
+    target = Path(path).resolve()
+    if not target.is_dir():
+        console.print(Panel("[red]Path is not a directory or does not exist.[/red]", border_style="dim", title="[red]Error[/red]"))
+        raise typer.Exit(1)
+
+    report = review_codebase(target, lang, console)
+
+    _display_review_report(report, console)
+
+    # Persist
+    review_id = uuid.uuid4().hex[:8]
+    error_count = sum(1 for i in report.issues if i.severity == "error")
+    save_review(
+        id=review_id,
+        path=str(target),
+        language=report.language,
+        files_reviewed=report.files_reviewed,
+        issue_count=len(report.issues),
+        error_count=error_count,
+        report_json=report.model_dump_json(),
+        reviewed_at=datetime.utcnow().isoformat() + "Z",
+    )
+    console.print(f"[dim]Review saved. ID: {review_id}[/dim]")
+
+    if report.issues:
+        console.print(f"\n[dim]Run `rica fix {path}` to apply fixes for error-severity issues.[/dim]")
+
+
+@app.command()
+def fix(
+    path: str = typer.Argument(..., help="Path to the codebase directory to fix"),
+    lang: str | None = typer.Option(None, "--lang", help="Language override"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show diffs without writing"),
+) -> None:
+    """Apply fixes for error-severity issues in a codebase."""
+    console = Console()
+    print_banner()
+
+    target = Path(path).resolve()
+    if not target.is_dir():
+        console.print(Panel("[red]Path is not a directory or does not exist.[/red]", border_style="dim", title="[red]Error[/red]"))
+        raise typer.Exit(1)
+
+    console.print("[dim]Running review...[/dim]")
+    report = review_codebase(target, lang, console)
+
+    error_issues = [i for i in report.issues if i.severity == "error"]
+    if not error_issues:
+        console.print("[dim]No errors to fix.[/dim]")
+        raise typer.Exit(0)
+
+    if dry_run:
+        console.print(f"[dim]Dry run — {len(error_issues)} error(s) would be fixed.[/dim]")
+
+    # Group by file
+    by_file: dict[str, list[ReviewIssue]] = {}
+    for issue in error_issues:
+        by_file.setdefault(issue.file, []).append(issue)
+
+    # Load all source files for cross-file context
+    from rica.reviewer import _collect_files, _load_files
+    all_source = _load_files(target, _collect_files(target), console)
+
+    fixed_count = 0
+    for rel_file, issues in by_file.items():
+        file_path = target / rel_file
+        if not file_path.is_file():
+            console.print(f"[dim]Skipping {rel_file} — not found on disk.[/dim]")
+            continue
+
+        console.print(f"[dim]Fixing {rel_file} ({len(issues)} issue(s))...[/dim]")
+        original = file_path.read_text(encoding="utf-8", errors="replace")
+
+        fixed_content = fix_file(file_path, issues, all_source, report.language, console)
+
+        if dry_run:
+            diff = list(
+                difflib.unified_diff(
+                    original.splitlines(keepends=True),
+                    fixed_content.splitlines(keepends=True),
+                    fromfile=f"a/{rel_file}",
+                    tofile=f"b/{rel_file}",
+                )
+            )
+            diff_text = "".join(diff) if diff else "(no changes)"
+            console.print(Panel(diff_text, title=f"[dim]Diff: {rel_file}[/dim]", border_style="dim"))
+        else:
+            file_path.write_text(fixed_content, encoding="utf-8")
+            fixed_count += 1
+
+    if dry_run:
+        console.print(f"[dim]Dry run complete. {len(by_file)} file(s) would be modified.[/dim]")
+        raise typer.Exit(0)
+
+    # Re-review
+    console.print("[dim]Re-running review after fixes...[/dim]")
+    updated_report = review_codebase(target, report.language, console)
+    remaining = len(updated_report.issues)
+    console.print(f"\n[dim]Fixed {fixed_count} file(s). {remaining} issue(s) remaining.[/dim]")
+
+    # Persist updated review
+    review_id = uuid.uuid4().hex[:8]
+    error_count = sum(1 for i in updated_report.issues if i.severity == "error")
+    save_review(
+        id=review_id,
+        path=str(target),
+        language=updated_report.language,
+        files_reviewed=updated_report.files_reviewed,
+        issue_count=remaining,
+        error_count=error_count,
+        report_json=updated_report.model_dump_json(),
+        reviewed_at=datetime.utcnow().isoformat() + "Z",
+    )
+
+    _display_review_report(updated_report, console)
+
+
+@app.command()
+def reviews(
+    path: str | None = typer.Option(None, "--path", help="Filter by directory path"),
+) -> None:
+    """List past review sessions."""
+    console = Console()
+    print_banner()
+
+    rows = get_reviews_for_path(path)
+    if not rows:
+        console.print("[dim]No reviews found.[/dim]")
+        raise typer.Exit(0)
+
+    table = Table(border_style="dim", header_style="dim")
+    table.add_column("ID", style="dim", width=10)
+    table.add_column("Path")
+    table.add_column("Language", width=12)
+    table.add_column("Files", justify="right", width=7)
+    table.add_column("Issues", justify="right", width=7)
+    table.add_column("Errors", justify="right", width=7)
+    table.add_column("Reviewed At")
+
+    for row in rows:
+        truncated_path = row["path"]
+        if len(truncated_path) > 48:
+            truncated_path = "..." + truncated_path[-45:]
+        table.add_row(
+            row["id"][:8],
+            truncated_path,
+            row["language"],
+            str(row["files_reviewed"]),
+            str(row["issue_count"]),
+            str(row["error_count"]),
+            row["reviewed_at"],
+        )
+
+    console.print(table)
 
 
 @app.callback(invoke_without_command=True)
