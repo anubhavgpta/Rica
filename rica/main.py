@@ -1094,6 +1094,17 @@ def reviews(
     console.print(table)
 
 
+@app.command()
+def watch(
+    path: str = typer.Argument(..., help="Directory to watch"),
+    lang: Optional[str] = typer.Option(None, "--lang", help="Override language detection"),
+    debounce: float = typer.Option(1.5, "--debounce", help="Debounce seconds (default 1.5)"),
+) -> None:
+    """L6: Watch a directory and auto-review on file changes."""
+    from rica.watcher import watch_path
+    watch_path(Path(path).resolve(), lang_override=lang, debounce=debounce, console=console)
+
+
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
