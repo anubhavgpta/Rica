@@ -117,6 +117,18 @@ class Database:
                 )
             """)
             
+            # Create explanations table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS explanations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    path TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    files_analyzed INTEGER NOT NULL,
+                    explanation TEXT NOT NULL,
+                    explained_at TEXT NOT NULL
+                )
+            """)
+            
             conn.commit()
     
     def create_session(self, session_id: str, goal: str, language: str) -> None:
@@ -386,3 +398,35 @@ def get_reviews_for_path(path: str | None) -> list[dict]:
 
 # Global database instance
 db = Database()
+
+
+def save_explanation(report: "ExplainReport") -> int:
+    """Persist an ExplainReport and return its row id."""
+    conn = get_connection()
+    with conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO explanations (path, language, files_analyzed, explanation, explained_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (report.path, report.language, report.files_analyzed, report.explanation, report.explained_at),
+        )
+        return cursor.lastrowid
+
+
+def list_explanations(path_filter: str | None = None) -> list[dict]:
+    """Return all explanation rows, optionally filtered by path prefix."""
+    conn = get_connection()
+    if path_filter:
+        rows = conn.execute(
+            "SELECT * FROM explanations WHERE path LIKE ? ORDER BY explained_at DESC",
+            (path_filter + "%",),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM explanations ORDER BY explained_at DESC"
+        ).fetchall()
+    
+    # Get column names from cursor description
+    columns = [description[0] for description in conn.execute("SELECT * FROM explanations LIMIT 1").description] if rows else []
+    return [dict(zip(columns, row)) for row in rows]

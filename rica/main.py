@@ -16,11 +16,12 @@ from rich.tree import Tree
 
 from .config import PLANS_DIR, RICA_HOME
 from .codegen import build_project
-from .db import db
+from .db import db, save_explanation, list_explanations
 from .debugger import classify_error, generate_fix
 from .executor import detect_server, run_command
+from .explainer import explain_codebase
 from .llm import llm
-from .models import BuildPlan
+from .models import BuildPlan, ExplainReport
 from .planner import create_plan
 from .registry import get_language_config, LANGUAGE_REGISTRY
 from .reviewer import review_codebase, fix_file
@@ -1103,6 +1104,144 @@ def watch(
     """L6: Watch a directory and auto-review on file changes."""
     from rica.watcher import watch_path
     watch_path(Path(path).resolve(), lang_override=lang, debounce=debounce, console=console)
+
+
+@app.command()
+def explain(
+    path: str = typer.Argument(..., help="Path to the codebase to explain"),
+    lang: str = typer.Option(None, "--lang", help="Language override"),
+    out: str = typer.Option(None, "--out", help="Write explanation to this .md file"),
+) -> None:
+    """L7: Explain a codebase in plain English."""
+    from rica.registry import LANGUAGE_REGISTRY
+    
+    # Resolve and validate path
+    target_path = Path(path).resolve()
+    if not target_path.exists() or not target_path.is_dir():
+        console.print(
+            Panel(
+                f"[red]Path '{path}' does not exist or is not a directory.[/red]",
+                border_style="dim",
+                title="[red]Error[/red]",
+            )
+        )
+        raise typer.Exit(1)
+
+    # Auto-detect language if not provided
+    if lang is None:
+        ext_counts: dict[str, int] = {}
+        skip_dirs = {".venv", "venv", "env", "node_modules", "__pycache__", ".git", "dist", "build", "target", ".tox"}
+        
+        for f in target_path.rglob("*"):
+            if f.is_file() and not any(p in skip_dirs for p in f.parts):
+                ext = f.suffix.lower()
+                ext_counts[ext] = ext_counts.get(ext, 0) + 1
+
+        lang_scores: dict[str, int] = {}
+        for language, info in LANGUAGE_REGISTRY.items():
+            ext = info.get("extension", "")
+            score = ext_counts.get(ext, 0) if ext else 0
+            if score > 0:
+                lang_scores[language] = score
+
+        if not lang_scores:
+            console.print(
+                Panel(
+                    "[red]Could not auto-detect language. Re-run with --lang.[/red]",
+                    border_style="dim",
+                    title="[red]Error[/red]",
+                )
+            )
+            raise typer.Exit(1)
+        
+        max_score = max(lang_scores.values())
+        winners = [language for language, score in lang_scores.items() if score == max_score]
+        if len(winners) != 1:
+            console.print(
+                Panel(
+                    "[red]Language detection ambiguous. Re-run with --lang.[/red]",
+                    border_style="dim",
+                    title="[red]Error[/red]",
+                )
+            )
+            raise typer.Exit(1)
+        
+        lang = winners[0]
+        console.print(f"[dim]Detected language: {lang}[/dim]")
+
+    # Generate explanation
+    try:
+        report = explain_codebase(target_path, lang, console)
+    except Exception as exc:
+        console.print(
+            Panel(
+                f"[red]Failed to generate explanation.[/red]\n\n[dim]{exc}[/dim]",
+                border_style="dim",
+                title="[red]Error[/red]",
+            )
+        )
+        raise typer.Exit(1)
+
+    # Display explanation
+    console.print(
+        Panel(
+            report.explanation,
+            border_style="dim",
+            title="Explanation",
+        )
+    )
+    console.print(f"[dim]Files analyzed: {report.files_analyzed}[/dim]")
+    console.print(f"[dim]Language: {report.language}[/dim]")
+
+    # Save to database
+    save_explanation(report)
+
+    # Write to file if requested
+    if out:
+        out_path = Path(out)
+        markdown_content = f"""# Explanation: {path}
+
+**Language:** {report.language}
+**Files analyzed:** {report.files_analyzed}
+**Generated:** {report.explained_at}
+
+{report.explanation}
+"""
+        out_path.write_text(markdown_content, encoding="utf-8")
+        console.print(f"[dim]Explanation written to {out_path}[/dim]")
+
+
+@app.command()
+def explanations(
+    path: str = typer.Option(None, "--path", help="Filter by path prefix"),
+) -> None:
+    """List past explanation sessions."""
+    rows = list_explanations(path_filter=path)
+
+    if not rows:
+        console.print("[dim]No explanations found.[/dim]")
+        return
+
+    table = Table(border_style="dim", header_style="dim")
+    table.add_column("ID", style="dim", width=8)
+    table.add_column("Path")
+    table.add_column("Language", width=12)
+    table.add_column("Files", justify="right", width=7)
+    table.add_column("Explained At")
+
+    for row in rows:
+        truncated_path = row["path"]
+        if len(truncated_path) > 48:
+            truncated_path = "..." + truncated_path[-45:]
+        table.add_row(
+            str(row["id"]),
+            truncated_path,
+            row["language"],
+            str(row["files_analyzed"]),
+            row["explained_at"],
+        )
+
+    console.print(table)
 
 
 @app.callback(invoke_without_command=True)

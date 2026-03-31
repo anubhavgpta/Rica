@@ -73,3 +73,11 @@ class ReviewReport(BaseModel):
     files_reviewed: int
     issues: list[ReviewIssue]
     summary: str
+
+
+class ExplainReport(BaseModel):
+    path: str
+    language: str
+    files_analyzed: int
+    explanation: str
+    explained_at: str
