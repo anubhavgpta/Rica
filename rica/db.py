@@ -643,3 +643,89 @@ def get_rebuild_logs(session_id: str) -> list[dict]:
     columns = ["files_checked", "files_changed", "files_cascaded", 
               "files_rewritten", "files_skipped", "rebuilt_at"]
     return [dict(zip(columns, row)) for row in rows]
+
+
+def get_latest_build(session_id: str) -> dict | None:
+    """Get the most recent build for a session."""
+    conn = get_connection()
+    cursor = conn.execute(
+        """SELECT * FROM builds 
+           WHERE session_id=? 
+           ORDER BY started_at DESC LIMIT 1""",
+        (session_id,)
+    )
+    result = cursor.fetchone()
+    if result:
+        columns = [desc[0] for desc in cursor.description]
+        return dict(zip(columns, result))
+    return None
+
+
+def get_latest_debug(session_id: str) -> dict | None:
+    """Get the most recent debug session for a session."""
+    conn = get_connection()
+    cursor = conn.execute(
+        """SELECT * FROM debug_sessions 
+           WHERE session_id=? 
+           ORDER BY started_at DESC LIMIT 1""",
+        (session_id,)
+    )
+    result = cursor.fetchone()
+    if result:
+        columns = [desc[0] for desc in cursor.description]
+        return dict(zip(columns, result))
+    return None
+
+
+def get_latest_review(session_id: str) -> dict | None:
+    """Get the most recent review globally."""
+    conn = get_connection()
+    cursor = conn.execute(
+        """SELECT * FROM reviews 
+           ORDER BY reviewed_at DESC LIMIT 1"""
+    )
+    result = cursor.fetchone()
+    if result:
+        columns = [desc[0] for desc in cursor.description]
+        return dict(zip(columns, result))
+    return None
+
+
+def get_latest_test_gen(session_id: str) -> dict | None:
+    """Get the most recent test generation for a session."""
+    conn = get_connection()
+    cursor = conn.execute(
+        """SELECT * FROM test_generations 
+           WHERE session_id=? 
+           ORDER BY generated_at DESC LIMIT 1""",
+        (session_id,)
+    )
+    result = cursor.fetchone()
+    if result:
+        columns = [desc[0] for desc in cursor.description]
+        return dict(zip(columns, result))
+    return None
+
+
+def get_sessions() -> list[dict]:
+    """Get all sessions."""
+    conn = get_connection()
+    cursor = conn.execute(
+        """SELECT * FROM sessions 
+           ORDER BY created_at DESC"""
+    )
+    columns = [desc[0] for desc in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+def get_executions(session_id: str) -> list[dict]:
+    """Get all executions for a session."""
+    conn = get_connection()
+    cursor = conn.execute(
+        """SELECT * FROM executions 
+           WHERE session_id=? 
+           ORDER BY executed_at DESC""",
+        (session_id,)
+    )
+    columns = [desc[0] for desc in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]

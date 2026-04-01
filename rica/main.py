@@ -1568,3 +1568,12 @@ def main(
 
 if __name__ == "__main__":
     app()
+
+
+@app.command()
+def dashboard(
+    refresh: int = typer.Option(5, "--refresh", "-r", help="Refresh interval in seconds")
+) -> None:
+    """Launch the interactive Rica session dashboard."""
+    from rica.dashboard import run_dashboard
+    run_dashboard(refresh=refresh)
