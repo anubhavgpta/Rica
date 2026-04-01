@@ -1,6 +1,7 @@
 """LLM client wrapper for Gemini 2.5 Flash."""
 
 from typing import Optional
+from pathlib import Path
 
 import google.genai
 from google.genai import types
@@ -40,6 +41,19 @@ class LLMClient:
         except Exception as e:
             console.print(f"[red]Error calling Gemini API: {e}[/red]")
             raise
+
+
+def generate(system_prompt_file: str, user_prompt: str) -> str:
+    """Standalone generate function that reads system prompt from file."""
+    # Read system prompt from file
+    system_prompt_path = Path(system_prompt_file)
+    if not system_prompt_path.exists():
+        raise FileNotFoundError(f"System prompt file not found: {system_prompt_file}")
+    
+    system_prompt = system_prompt_path.read_text()
+    
+    # Use global LLM client
+    return llm.generate(system_prompt, user_prompt)
 
 
 # Global LLM client instance

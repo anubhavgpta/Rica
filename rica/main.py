@@ -16,7 +16,7 @@ from rich.tree import Tree
 
 from .config import PLANS_DIR, RICA_HOME
 from .codegen import build_project
-from .db import db, save_explanation, list_explanations, save_refactor, list_refactors, list_test_generations
+from .db import db, save_explanation, list_explanations, save_refactor, list_refactors, list_test_generations, get_rebuild_logs
 from .debugger import classify_error, generate_fix
 from .executor import detect_server, run_command
 from .explainer import explain_codebase
@@ -29,6 +29,8 @@ from .reviewer import review_codebase, fix_file
 from .models import ReviewIssue, ReviewReport
 from .db import save_review, get_reviews_for_path
 from .test_generator import generate_tests
+from . import rebuilder, snapshotter, dep_graph
+from .models import FileSnapshot, RebuildReport
 
 app = typer.Typer(help="Rica - Language-Agnostic Autonomous Coding Agent")
 console = Console()
@@ -336,6 +338,10 @@ def build(
         db.complete_build(build_id, completed_at)
         
         console.print(f"[green]Build complete. Workspace: {workspace_path}[/green]")
+        
+        # Take initial snapshot for rebuild functionality
+        snapshotter.take_snapshot(session_id, workspace_path)
+        console.print("[dim]Snapshot saved.[/dim]")
         
     except Exception as e:
         console.print(f"[red]Build failed: {e}[/red]")
@@ -1431,6 +1437,119 @@ def test_generations(
             str(row["files_analyzed"]),
             str(row["tests_generated"]),
             row["generated_at"],
+        )
+    
+    console.print(table)
+
+
+@app.command()
+def rebuild(
+    session_id: str = typer.Argument(..., help="Session ID to rebuild"),
+    changed_only: bool = typer.Option(True, "--changed-only/--no-changed-only",
+                                     help="Rebuild only changed files and dependents"),
+) -> None:
+    """Rebuild a project, focusing on changed files and their dependents."""
+    print_banner()
+    
+    # Load session from DB
+    sessions = db.list_sessions()
+    session_found = False
+    for session in sessions:
+        if session["id"] == session_id:
+            session_found = True
+            break
+    
+    if not session_found:
+        console.print(f"[red]Session not found: {session_id}[/red]")
+        raise typer.Exit(1)
+    
+    # Load plan JSON
+    plan_file = PLANS_DIR / f"{session_id}.json"
+    if not plan_file.exists():
+        console.print(f"[red]Plan file not found for session: {session_id}[/red]")
+        raise typer.Exit(1)
+    
+    try:
+        plan = BuildPlan.model_validate_json(plan_file.read_text())
+    except Exception as e:
+        console.print(f"[red]Error parsing plan: {e}[/red]")
+        raise typer.Exit(1)
+    
+    # Resolve workspace
+    workspace_path = RICA_HOME / "workspaces" / session_id
+    if not workspace_path.exists():
+        console.print("[red]Workspace not found. Run `rica build` first.[/red]")
+        raise typer.Exit(1)
+    
+    # Print progress
+    console.print("[dim]Scanning workspace for changes...[/dim]")
+    
+    # Rebuild
+    report = rebuilder.rebuild_changed(session_id, workspace_path, plan, changed_only)
+    
+    # Show rebuild report
+    console.print(Panel(
+        f"Files checked:   {report.files_checked}\n"
+        f"Files changed:   {len(report.files_changed)}\n"
+        f"Files cascaded:  {len(report.files_cascaded)}\n"
+        f"Files rewritten: {len(report.files_rewritten)}\n"
+        f"Files skipped:   {len(report.files_skipped)}",
+        title="Rebuild Report",
+        border_style="dim"
+    ))
+    
+    # Show details if there were changes
+    if report.files_changed:
+        console.print("\n[dim]Changed Files:[/dim]")
+        for path in report.files_changed:
+            console.print(f"  [dim]{path}[/dim]")
+    
+    if report.files_cascaded:
+        console.print("\n[dim]Cascaded (dependents):[/dim]")
+        for path in report.files_cascaded:
+            console.print(f"  [dim]{path}[/dim]")
+    
+    if report.files_rewritten:
+        console.print("\n[dim]Rewritten:[/dim]")
+        for path in report.files_rewritten:
+            console.print(f"  [dim]{path}[/dim]")
+
+
+@app.command()
+def rebuild_history(
+    session_id: str = typer.Argument(..., help="Session ID"),
+) -> None:
+    """Show rebuild history for a session."""
+    print_banner()
+    
+    logs = get_rebuild_logs(session_id)
+    
+    if not logs:
+        console.print(f"No rebuild history for session: {session_id}")
+        return
+    
+    console.print(Panel(
+        "",
+        title=f"Rebuild History — {session_id}",
+        border_style="dim"
+    ))
+    
+    table = Table()
+    table.add_column("Rebuilt At", style="dim")
+    table.add_column("Checked", justify="right", style="blue")
+    table.add_column("Changed", justify="right", style="yellow")
+    table.add_column("Cascaded", justify="right", style="cyan")
+    table.add_column("Rewritten", justify="right", style="green")
+    table.add_column("Skipped", justify="right", style="red")
+    
+    for log in logs:
+        table.add_row(
+            log["rebuilt_at"],
+            str(log["files_checked"]),
+            str(log["files_changed"]),
+            str(log["files_cascaded"]),
+            str(log["files_rewritten"]),
+            str(log["files_skipped"])
         )
     
     console.print(table)

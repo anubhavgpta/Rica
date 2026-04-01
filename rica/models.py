@@ -143,3 +143,23 @@ class TestGenReport(BaseModel):
     files_analyzed: int
     tests_generated: list[GeneratedTest]
     generated_at: str
+
+
+class FileSnapshot(BaseModel):
+    """Snapshot of a file at a point in time."""
+    path: str                    # relative path within workspace
+    sha256: str | None = None
+    mtime: float
+    snapshotted_at: str
+
+
+class RebuildReport(BaseModel):
+    """Report of a rebuild operation."""
+    session_id: str
+    workspace: str
+    files_checked: int
+    files_changed: list[str]
+    files_cascaded: list[str]
+    files_rewritten: list[str]
+    files_skipped: list[str]
+    rebuilt_at: str

@@ -157,6 +157,32 @@ class Database:
                 )
             """)
             
+            # Create file_snapshots table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS file_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    sha256 TEXT,
+                    mtime REAL NOT NULL,
+                    snapshotted_at TEXT NOT NULL
+                )
+            """)
+            
+            # Create rebuild_logs table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS rebuild_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    files_checked INTEGER,
+                    files_changed INTEGER,
+                    files_cascaded INTEGER,
+                    files_rewritten INTEGER,
+                    files_skipped INTEGER,
+                    rebuilt_at TEXT NOT NULL
+                )
+            """)
+            
             conn.commit()
     
     def create_session(self, session_id: str, goal: str, language: str) -> None:
@@ -551,4 +577,69 @@ def get_sessions_by_language(language: str) -> list[dict]:
     
     # Get column names from cursor description
     columns = [description[0] for description in conn.execute("SELECT * FROM sessions LIMIT 1").description] if rows else []
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def save_snapshot(session_id: str, snapshots: list[dict]) -> None:
+    """Save file snapshots for a session, replacing any existing snapshots."""
+    conn = get_connection()
+    with conn:
+        # Delete existing snapshots for this session
+        conn.execute("DELETE FROM file_snapshots WHERE session_id = ?", (session_id,))
+        
+        # Insert new snapshots
+        for snapshot in snapshots:
+            conn.execute("""
+                INSERT INTO file_snapshots (session_id, path, sha256, mtime, snapshotted_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                session_id,
+                snapshot["path"],
+                snapshot.get("sha256"),
+                snapshot["mtime"],
+                datetime.utcnow().isoformat() + "Z"
+            ))
+
+
+def get_snapshot(session_id: str) -> list[dict]:
+    """Get all file snapshots for a session."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT path, sha256, mtime FROM file_snapshots WHERE session_id = ? ORDER BY path",
+        (session_id,)
+    ).fetchall()
+    
+    columns = ["path", "sha256", "mtime"]
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def save_rebuild_log(session_id: str, checked: int, changed: int,
+                   cascaded: int, rewritten: int, skipped: int) -> None:
+    """Save a rebuild log entry."""
+    conn = get_connection()
+    with conn:
+        conn.execute("""
+            INSERT INTO rebuild_logs (session_id, files_checked, files_changed, 
+                                    files_cascaded, files_rewritten, files_skipped, rebuilt_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            session_id, checked, changed, cascaded, rewritten, skipped,
+            datetime.utcnow().isoformat() + "Z"
+        ))
+
+
+def get_rebuild_logs(session_id: str) -> list[dict]:
+    """Get all rebuild logs for a session in descending order."""
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT files_checked, files_changed, files_cascaded, files_rewritten, 
+                  files_skipped, rebuilt_at 
+           FROM rebuild_logs 
+           WHERE session_id = ? 
+           ORDER BY rebuilt_at DESC""",
+        (session_id,)
+    ).fetchall()
+    
+    columns = ["files_checked", "files_changed", "files_cascaded", 
+              "files_rewritten", "files_skipped", "rebuilt_at"]
     return [dict(zip(columns, row)) for row in rows]
