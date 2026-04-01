@@ -1,6 +1,7 @@
 """Test generation layer for Rica - L8 Part 2 implementation."""
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import List
@@ -12,7 +13,7 @@ from .config import PLANS_DIR
 from .db import db, save_test_generation
 from .llm import llm
 from .models import BuildPlan, GeneratedTest, TestGenReport
-from .registry import LANGUAGE_REGISTRY
+from .registry import LANGUAGE_REGISTRY, detect_languages
 
 # Skip directories that should never be analyzed
 _SKIP_DIRS = frozenset({
@@ -21,6 +22,36 @@ _SKIP_DIRS = frozenset({
 })
 
 _MAX_BYTES: int = 100_000  # 100 KB
+
+
+def _sanitize_json_string_literals(raw: str) -> str:
+    """
+    Replace unescaped literal newlines inside JSON string values with \n.
+    Handles the case where an LLM returns multi-line content inside a JSON
+    string without properly escaping newlines.
+    """
+    result = []
+    in_string = False
+    escape_next = False
+    for char in raw:
+        if escape_next:
+            result.append(char)
+            escape_next = False
+        elif char == '\\':
+            result.append(char)
+            escape_next = True
+        elif char == '"' and not escape_next:
+            in_string = not in_string
+            result.append(char)
+        elif in_string and char == '\n':
+            result.append('\\n')
+        elif in_string and char == '\r':
+            result.append('\\r')
+        elif in_string and char == '\t':
+            result.append('\\t')
+        else:
+            result.append(char)
+    return ''.join(result)
 
 
 def _collect_files(path: Path, language: str) -> List[Path]:
@@ -78,7 +109,7 @@ def _load_files(
 
 def generate_tests(session_id: str, console: Console) -> TestGenReport:
     """Generate tests for a given session."""
-    # Load the BuildPlan
+    # Load BuildPlan
     plan_path = PLANS_DIR / f"{session_id}.json"
     if not plan_path.exists():
         raise FileNotFoundError(f"Build plan not found for session {session_id}. Expected at: {plan_path}")
@@ -97,73 +128,132 @@ def generate_tests(session_id: str, console: Console) -> TestGenReport:
         raise RuntimeError(f"Workspace not found: {workspace}")
     
     console.print(f"Analyzing workspace: {workspace}")
-    console.print(f"Language: {plan.language}")
     console.print(f"Goal: {plan.goal}")
     
-    # Collect source files using the same filter as L5/L6/L7/L8a
-    source_files = _collect_files(workspace, plan.language)
-    console.print(f"Found {len(source_files)} source files")
+    # Detect languages for multi-language support
+    if hasattr(plan, 'languages') and len(plan.languages) > 1:
+        languages = plan.languages
+        console.print(f"Languages: {', '.join(str(l) for l in languages)}")
+    else:
+        languages = [plan.language]
+        console.print(f"Language: {plan.language}")
     
-    # Load file contents with 100KB truncation
-    file_contents = _load_files(workspace, source_files, console)
-    console.print(f"Loaded {len(file_contents)} files for analysis")
+    all_tests = []
+    total_files_analyzed = 0
     
-    # Build prompt for LLM
-    prompt_parts = []
-    prompt_parts.append("PROJECT GOAL:")
-    prompt_parts.append(plan.goal)
-    prompt_parts.append("")
-    
-    prompt_parts.append("LANGUAGE:")
-    prompt_parts.append(plan.language)
-    prompt_parts.append("")
-    
-    prompt_parts.append("MILESTONES:")
-    for milestone in plan.milestones:
-        prompt_parts.append(f"- {milestone.name}: {milestone.description}")
-    prompt_parts.append("")
-    
-    prompt_parts.append("SOURCE FILES:")
-    for rel_path, content in file_contents.items():
-        prompt_parts.append(f"### {rel_path}")
-        prompt_parts.append(content)
-        prompt_parts.append("")
-    
-    user_prompt = "\n".join(prompt_parts)
-    
-    # Call LLM
-    console.print("[dim]Generating test suite...[/dim]")
-    raw_response = llm.generate(TEST_GENERATOR_SYSTEM_PROMPT, user_prompt)
-    cleaned_response = _strip_fences(raw_response)
-    
-    # Parse JSON response
-    try:
-        tests_data = json.loads(cleaned_response)
-        if not isinstance(tests_data, list):
-            raise ValueError("Response is not a JSON array")
-    except json.JSONDecodeError as e:
-        console.print(Panel(
-            f"Failed to parse LLM response as JSON: {e}\n\nRaw response:\n{cleaned_response}",
-            title="Test Generation Error",
-            border_style="red"
-        ))
-        raise RuntimeError("Failed to parse test generation response")
-    
-    # Validate test data structure
-    generated_tests = []
-    for test_item in tests_data:
-        if not isinstance(test_item, dict) or "path" not in test_item or "content" not in test_item:
-            raise ValueError("Invalid test format - each item must have 'path' and 'content' fields")
+    for lang in languages:
+        console.print(f"[dim]Generating tests for {lang} files...[/dim]")
         
-        generated_test = GeneratedTest(
-            path=test_item["path"],
-            content=test_item["content"]
-        )
-        generated_tests.append(generated_test)
+        # Collect source files for this language
+        source_files = _collect_files(workspace, lang)
+        console.print(f"Found {len(source_files)} {lang} source files")
+        
+        if not source_files:
+            console.print(f"[dim]No {lang} files found.[/dim]")
+            continue
+        
+        # Load file contents with 100KB truncation
+        file_contents = _load_files(workspace, source_files, console)
+        console.print(f"Loaded {len(file_contents)} {lang} files for analysis")
+        total_files_analyzed += len(file_contents)
+        
+        # Build file contents for prompt
+        file_blocks = []
+        for rel_path, content in file_contents.items():
+            file_blocks.append(f"### {rel_path}")
+            file_blocks.append(content)
+            file_blocks.append("")
+        
+        file_contents_str = "\n".join(file_blocks)
+        
+        # Load appropriate prompt
+        if len(languages) > 1:
+            prompt_path = Path(__file__).parent / "prompts" / "test_generator_multilang.txt"
+            try:
+                prompt_template = prompt_path.read_text(encoding="utf-8")
+                # Use replace instead of format to avoid brace conflicts
+                system_prompt = prompt_template
+                system_prompt = system_prompt.replace("{goal}", plan.goal)
+                system_prompt = system_prompt.replace("{LANGUAGE}", lang)
+                system_prompt = system_prompt.replace("{file_contents}", file_contents_str)
+                user_prompt = ""
+            except Exception as e:
+                console.print(f"[red]DEBUG: Error loading prompt: {e}[/red]")
+                raise
+        else:
+            prompt_path = Path(__file__).parent / "prompts" / "test_generator.txt"
+            system_prompt = prompt_path.read_text(encoding="utf-8")
+            
+            # Build prompt for single language
+            prompt_parts = []
+            prompt_parts.append("PROJECT GOAL:")
+            prompt_parts.append(plan.goal)
+            prompt_parts.append("")
+            
+            prompt_parts.append("LANGUAGE:")
+            prompt_parts.append(lang)
+            prompt_parts.append("")
+            
+            prompt_parts.append("FILES:")
+            for rel_path, content in file_contents.items():
+                prompt_parts.append(f"### {rel_path}")
+                prompt_parts.append(content)
+                prompt_parts.append("")
+            
+            user_prompt = "\n".join(prompt_parts)
+            
+            prompt_parts.append("MILESTONES:")
+            for milestone in plan.milestones:
+                prompt_parts.append(f"- {milestone.name}: {milestone.description}")
+            prompt_parts.append("")
+            
+            prompt_parts.append("SOURCE FILES:")
+            prompt_parts.append(file_contents_str)
+            
+            system_prompt = system_prompt  # Use the loaded prompt as system prompt
+            user_prompt = "\n".join(prompt_parts)
+        
+        # Call LLM
+        console.print(f"[dim]Generating {lang} test suite...[/dim]")
+        
+        if len(languages) > 1:
+            raw_response = llm.generate(system_prompt, "")
+        else:
+            raw_response = llm.generate(system_prompt="", user_prompt=user_prompt)
+            
+        cleaned_response = _strip_fences(raw_response)
+        
+        # Parse JSON response
+        try:
+            sanitized_response = _sanitize_json_string_literals(cleaned_response)
+            tests_data = json.loads(sanitized_response)
+            if not isinstance(tests_data, list):
+                raise ValueError("Response is not a JSON array")
+        except json.JSONDecodeError as e:
+            console.print(
+                f"[red]Failed to parse {lang} test generation response as JSON: {e}[/red]\n[dim]Raw response:[/dim]\n{cleaned_response[:500]}"
+            )
+            continue
+        
+        # Validate test data structure
+        lang_tests = []
+        for test_item in tests_data:
+            if not isinstance(test_item, dict) or "path" not in test_item or "content" not in test_item:
+                console.print(f"[red]Invalid test item: {test_item}[/red]")
+                raise ValueError("Invalid test format - each item must have 'path' and 'content' fields")
+            
+            generated_test = GeneratedTest(
+                path=test_item["path"],
+                content=test_item["content"]
+            )
+            lang_tests.append(generated_test)
+        
+        all_tests.extend(lang_tests)
+        console.print(f"[dim]Generated {len(lang_tests)} {lang} test files[/dim]")
     
     # Write test files to workspace
-    console.print(f"Writing {len(generated_tests)} test files...")
-    for test in generated_tests:
+    console.print(f"Writing {len(all_tests)} test files...")
+    for test in all_tests:
         test_path = workspace / test.path
         test_path.parent.mkdir(parents=True, exist_ok=True)
         
@@ -175,10 +265,10 @@ def generate_tests(session_id: str, console: Console) -> TestGenReport:
     # Create report
     report = TestGenReport(
         session_id=session_id,
-        language=plan.language,
+        language=",".join(languages),
         goal=plan.goal,
-        files_analyzed=len(file_contents),
-        tests_generated=generated_tests,
+        files_analyzed=total_files_analyzed,
+        tests_generated=all_tests,
         generated_at=datetime.utcnow().isoformat() + "Z"
     )
     

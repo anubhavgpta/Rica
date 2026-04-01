@@ -14,7 +14,7 @@ from rich.table import Table
 from rica.codegen import _strip_fences
 from rica.llm import llm
 from rica.models import ReviewIssue, ReviewReport
-from rica.registry import LANGUAGE_REGISTRY
+from rica.registry import LANGUAGE_REGISTRY, detect_languages
 
 # Runtime directories to skip (mirrors L2 filter)
 _SKIP_DIRS: frozenset[str] = frozenset(
@@ -51,6 +51,24 @@ def _detect_language(path: Path) -> str | None:
     max_score = max(lang_scores.values())
     winners = [lang for lang, score in lang_scores.items() if score == max_score]
     return winners[0] if len(winners) == 1 else None
+
+
+def _collect_files_for_language(path: Path, language: str) -> list[Path]:
+    """Return all source files for a specific language under path."""
+    files: list[Path] = []
+    lang_config = LANGUAGE_REGISTRY.get(language)
+    if not lang_config:
+        return files
+        
+    target_ext = lang_config.get("extension", "")
+    if not target_ext:
+        return files
+        
+    for f in path.rglob("*"):
+        if f.is_file() and not any(part in _SKIP_DIRS for part in f.relative_to(path).parts):
+            if f.suffix.lower() == target_ext:
+                files.append(f)
+    return files
 
 
 def _collect_files(path: Path) -> list[Path]:
@@ -126,9 +144,9 @@ def review_codebase(
 ) -> ReviewReport:
     """Analyze an external codebase and return a structured ReviewReport."""
     # Language detection
-    if language is None:
-        language = _detect_language(path)
-        if language is None:
+    if language is None or language == "auto" or "," in language:
+        detected_languages = detect_languages(path)
+        if detected_languages == ["unknown"]:
             console.print(
                 Panel(
                     "[red]Could not auto-detect language. Re-run with --lang.[/red]",
@@ -137,54 +155,77 @@ def review_codebase(
                 )
             )
             raise SystemExit(1)
-        console.print(f"[dim]Detected language: {language}[/dim]")
-
-    # Collect and load files
-    all_files = _collect_files(path)
-    file_contents = _load_files(path, all_files, console)
-
-    if not file_contents:
-        console.print(
-            Panel(
-                "[red]No readable source files found.[/red]",
-                border_style="dim",
-                title="[red]Error[/red]",
+        language = ",".join(detected_languages)
+        console.print(f"[dim]Detected languages: {language}[/dim]")
+    
+    # Split languages for multi-language processing
+    languages = [lang.strip() for lang in language.split(",")]
+    
+    all_issues = []
+    total_files_reviewed = 0
+    
+    for lang in languages:
+        console.print(f"[dim]Reviewing {lang} files...[/dim]")
+        
+        # Collect and load files for this language
+        all_files = _collect_files_for_language(path, lang)
+        file_contents = _load_files(path, all_files, console)
+        
+        if not file_contents:
+            console.print(f"[dim]No {lang} files found.[/dim]")
+            continue
+        
+        total_files_reviewed += len(file_contents)
+        console.print(f"[dim]Reviewing {len(file_contents)} {lang} files...[/dim]")
+        
+        # Load appropriate prompt
+        if len(languages) > 1:
+            prompt_path = Path(__file__).parent / "prompts" / "reviewer_multilang.txt"
+            system_prompt = prompt_path.read_text(encoding="utf-8")
+        else:
+            prompt_path = Path(__file__).parent / "prompts" / "reviewer.txt"
+            system_prompt = prompt_path.read_text(encoding="utf-8")
+        
+        user_prompt = _build_review_prompt(path, lang, file_contents)
+        
+        # For multilang case, prepend language info to user prompt
+        if len(languages) > 1:
+            user_prompt = f"Language: {lang}\n\n{user_prompt}"
+        
+        raw = llm.generate(system_prompt, user_prompt)
+        raw = _strip_fences(raw)
+        
+        # Parse JSON
+        try:
+            data = json.loads(raw)
+            # Inject canonical values that LLM might misreport
+            data["path"] = str(path)
+            data["language"] = lang
+            data["files_reviewed"] = len(file_contents)
+            lang_report = ReviewReport(**data)
+            all_issues.extend(lang_report.issues)
+        except Exception as exc:
+            console.print(
+                Panel(
+                    f"[red]Failed to parse {lang} review response from LLM.[/red]\n\n"
+                    f"[dim]{exc}[/dim]\n\n"
+                    f"[dim]Raw output:[/dim]\n{raw[:500]}",
+                    border_style="dim",
+                    title=f"[red]{lang.title()} Parse Error[/red]",
+                )
             )
-        )
-        raise SystemExit(1)
-
-    console.print(f"[dim]Reviewing {len(file_contents)} files...[/dim]")
-
-    # Load system prompt
-    prompt_path = Path(__file__).parent / "prompts" / "reviewer.txt"
-    system_prompt = prompt_path.read_text(encoding="utf-8")
-
-    user_prompt = _build_review_prompt(path, language, file_contents)
-
-    raw = llm.generate(system_prompt, user_prompt)
-    raw = _strip_fences(raw)
-
-    # Parse JSON
-    try:
-        data = json.loads(raw)
-        # Inject canonical values that LLM might misreport
-        data["path"] = str(path)
-        data["language"] = language
-        data["files_reviewed"] = len(file_contents)
-        report = ReviewReport(**data)
-    except Exception as exc:
-        console.print(
-            Panel(
-                f"[red]Failed to parse review response from LLM.[/red]\n\n"
-                f"[dim]{exc}[/dim]\n\n"
-                f"[dim]Raw output:[/dim]\n{raw[:500]}",
-                border_style="dim",
-                title="[red]Parse Error[/red]",
-            )
-        )
-        raise SystemExit(1)
-
-    return report
+            continue
+    
+    # Create merged report
+    merged_report = ReviewReport(
+        path=str(path),
+        language=language,
+        files_reviewed=total_files_reviewed,
+        issues=all_issues,
+        summary=f"Review completed for {len(languages)} language(s) with {len(all_issues)} issues found."
+    )
+    
+    return merged_report
 
 
 def fix_file(

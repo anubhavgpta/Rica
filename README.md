@@ -1,5 +1,3 @@
-# Rica
-
 <p align="center">
   <img src="./ricaLogo.png" alt="Rica Banner" width="60%" />
 </p>

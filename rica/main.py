@@ -69,8 +69,11 @@ def print_banner() -> None:
 
 def display_plan(plan: BuildPlan) -> None:
     """Display a plan beautifully using Rich."""
-    # Main panel with goal and language
-    info_text = f"Language: [bold green]{plan.language}[/bold green]\n"
+    # Main panel with goal and languages
+    if hasattr(plan, 'languages') and len(plan.languages) > 1:
+        info_text = f"Languages: [bold green]{', '.join(plan.languages)}[/bold green]\n"
+    else:
+        info_text = f"Language: [bold green]{plan.language}[/bold green]\n"
     info_text += f"Files: [bold blue]{plan.estimated_files}[/bold blue]\n"
     info_text += f"Session: [bold cyan]{plan.session_id}[/bold cyan]"
     
@@ -125,8 +128,20 @@ def display_plan(plan: BuildPlan) -> None:
         
         console.print(tree)
     
-    # Install commands
-    if plan.install_commands:
+    # Install steps
+    if hasattr(plan, 'install_steps') and plan.install_steps:
+        console.print("─" * 80, style="dim")
+        console.print("Install Steps", style="bold")
+        console.print("─" * 80, style="dim")
+        
+        for step in plan.install_steps:
+            console.print(f"[bold]{step.language}[/bold]:")
+            for cmd in step.commands:
+                console.print(f"  $ {cmd}")
+            console.print()
+    
+    # Install commands (backwards compatibility)
+    elif plan.install_commands:
         console.print(Panel(
             "\n".join(f"$ {cmd}" for cmd in plan.install_commands),
             title="Install Commands",
@@ -155,12 +170,8 @@ def plan(
     session_id = str(uuid.uuid4())[:8]
     
     try:
-        # Create the plan
-        plan_obj = create_plan(goal, session_id)
-        
-        # Override language if specified
-        if lang:
-            plan_obj.language = lang
+        # Create plan with language override
+        plan_obj = create_plan(goal, session_id, lang_override=lang)
         
         # Create session in database
         db.create_session(session_id, goal, plan_obj.language)
@@ -935,7 +946,7 @@ def _display_review_report(report: ReviewReport, console: Console) -> None:
 @app.command()
 def review(
     path: str = typer.Argument(..., help="Path to the codebase directory to review"),
-    lang: str | None = typer.Option(None, "--lang", help="Language override"),
+    lang: str | None = typer.Option(None, "--lang", help="Language override (comma-separated for multi-language)"),
 ) -> None:
     """Analyze an existing codebase for issues."""
     console = Console()
@@ -1111,7 +1122,7 @@ def watch(
 @app.command()
 def explain(
     path: str = typer.Argument(..., help="Path to the codebase to explain"),
-    lang: str = typer.Option(None, "--lang", help="Language override"),
+    lang: str = typer.Option(None, "--lang", help="Language override (comma-separated for multi-language)"),
     out: str = typer.Option(None, "--out", help="Write explanation to this .md file"),
 ) -> None:
     """L7: Explain a codebase in plain English."""
@@ -1248,9 +1259,9 @@ def explanations(
 
 @app.command()
 def refactor(
-    path: str = typer.Argument(..., help="Path to the codebase directory to refactor"),
+    path: str = typer.Argument(..., help="Path to codebase directory to refactor"),
     goal: str = typer.Option(..., "--goal", "-g", help="Refactor instruction"),
-    lang: str = typer.Option(None, "--lang", help="Override language detection"),
+    lang: str = typer.Option(None, "--lang", help="Override language detection (comma-separated for multi-language)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without writing"),
 ) -> None:
     """Refactor a codebase according to the specified goal."""

@@ -536,3 +536,19 @@ def list_test_generations(session_id: str | None = None) -> list[dict]:
     # Get column names from cursor description
     columns = [description[0] for description in conn.execute("SELECT * FROM test_generations LIMIT 1").description] if rows else []
     return [dict(zip(columns, row)) for row in rows]
+
+
+def get_sessions_by_language(language: str) -> list[dict]:
+    """
+    Return all sessions whose language column contains the given language
+    string (case-insensitive substring match).
+    """
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM sessions WHERE language LIKE ? ORDER BY created_at DESC",
+        (f"%{language}%",),
+    ).fetchall()
+    
+    # Get column names from cursor description
+    columns = [description[0] for description in conn.execute("SELECT * FROM sessions LIMIT 1").description] if rows else []
+    return [dict(zip(columns, row)) for row in rows]

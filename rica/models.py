@@ -1,8 +1,14 @@
 """Pydantic models for Rica planning system."""
 
-from typing import List
+from typing import List, Optional
+from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+class FilePlanLanguage(BaseModel):
+    """Language tag attached to each FilePlan — added in L9."""
+    language: str   # resolved language string, e.g. "python", "typescript"
 
 
 class FilePlan(BaseModel):
@@ -11,6 +17,7 @@ class FilePlan(BaseModel):
     description: str = Field(description="What this file does and its purpose")
     language: str = Field(description="Programming language for this file")
     dependencies: List[str] = Field(default_factory=list, description="External dependencies needed")
+    language_tag: Optional[FilePlanLanguage] = None
 
 
 class Milestone(BaseModel):
@@ -20,16 +27,41 @@ class Milestone(BaseModel):
     files: List[FilePlan] = Field(description="Files to be created in this milestone")
 
 
+class LanguageInstallBlock(BaseModel):
+    language: str
+    commands: List[str]
+
+
 class BuildPlan(BaseModel):
     """Complete build plan for a coding project."""
     session_id: str = Field(description="Unique session identifier")
     goal: str = Field(description="User's original goal")
-    language: str = Field(description="Primary programming language")
+    languages: List[str] = Field(description="List of programming languages used")
+    language: str = Field(description="Primary programming language (backwards-compat)")
     rationale: str = Field(description="Why this language and approach was chosen")
     estimated_files: int = Field(description="Total number of files to be created")
     milestones: List[Milestone] = Field(description="List of milestones to complete")
-    install_commands: List[str] = Field(default_factory=list, description="Commands to install dependencies")
+    install_steps: List[LanguageInstallBlock] = Field(description="Ordered per-language install blocks")
+    install_commands: List[str] = Field(default_factory=list, description="Commands to install dependencies (backwards-compat)")
     notes: str = Field(default="", description="Additional notes or warnings")
+    
+    @model_validator(mode="after")
+    def populate_backwards_compat_fields(self):
+        """Populate backwards-compatibility fields from multi-language fields."""
+        # Set language to first language if not already set
+        if not self.language and self.languages:
+            self.language = self.languages[0]
+        elif self.languages and self.language != self.languages[0]:
+            # Ensure language always matches first language
+            self.language = self.languages[0]
+        
+        # Flatten install_steps to install_commands
+        if self.install_steps:
+            self.install_commands = []
+            for step in self.install_steps:
+                self.install_commands.extend(step.commands)
+        
+        return self
 
 
 class GeneratedFile(BaseModel):

@@ -10,7 +10,7 @@ from rich.console import Console
 from rica.codegen import _strip_fences
 from rica.llm import llm
 from rica.models import ExplainReport
-from rica.registry import LANGUAGE_REGISTRY
+from rica.registry import LANGUAGE_REGISTRY, detect_languages
 
 # Runtime directories to skip (mirrors L5 filter)
 _SKIP_DIRS: frozenset[str] = frozenset(
@@ -96,6 +96,17 @@ def _load_files(
 
 def explain_codebase(path: Path, language: str, console: Console) -> ExplainReport:
     """Generate a plain-English explanation of a codebase."""
+    # Language detection for multi-language support
+    if language == "auto" or "," in language:
+        detected_languages = detect_languages(path)
+        if detected_languages == ["unknown"]:
+            console.print(
+                "[red]Could not auto-detect language. Re-run with --lang.[/red]"
+            )
+            raise RuntimeError("Could not detect programming language")
+        language = ",".join(detected_languages)
+        console.print(f"[dim]Detected languages: {language}[/dim]")
+    
     # Collect and load files
     all_files = _collect_files(path)
     file_contents = _load_files(path, all_files, console)
@@ -120,7 +131,14 @@ def explain_codebase(path: Path, language: str, console: Console) -> ExplainRepo
     # Load and format prompt
     prompt_path = Path(__file__).parent / "prompts" / "explainer.txt"
     prompt_template = prompt_path.read_text(encoding="utf-8")
-    formatted_prompt = prompt_template.format(
+    
+    # Add language-aware prefix for multi-language codebases
+    if "," in language:
+        language_prefix = f"This codebase contains: {language}. Please cover all languages in your explanation.\n\n"
+    else:
+        language_prefix = ""
+    
+    formatted_prompt = language_prefix + prompt_template.format(
         language=language,
         path=path,
         file_contents=file_contents_str

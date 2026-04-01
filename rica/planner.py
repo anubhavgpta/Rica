@@ -16,15 +16,22 @@ from .models import BuildPlan
 console = Console()
 
 
-def create_plan(goal: str, session_id: str) -> BuildPlan:
+def create_plan(goal: str, session_id: str, lang_override: str = None) -> BuildPlan:
     """Create a build plan for the given goal."""
     # Load system prompt
     system_prompt_path = Path(__file__).parent / "prompts" / "planner.txt"
     with open(system_prompt_path, "r", encoding="utf-8") as f:
         system_prompt = f.read()
     
-    # Create user prompt
-    user_prompt = f"Create a build plan for this goal: {goal}"
+    # Create user prompt with language override if provided
+    if lang_override:
+        if "," in lang_override:
+            languages = [lang.strip() for lang in lang_override.split(",")]
+            user_prompt = f"Create a build plan for this goal: {goal}\n\nUse these languages: {', '.join(languages)}"
+        else:
+            user_prompt = f"Create a build plan for this goal: {goal}\n\nUse this language: {lang_override}"
+    else:
+        user_prompt = f"Create a build plan for this goal: {goal}"
     
     # Show spinner while calling LLM
     with RichProgress(
@@ -54,6 +61,13 @@ def create_plan(goal: str, session_id: str) -> BuildPlan:
         plan_data = json.loads(response)
         plan_data["session_id"] = session_id  # Ensure session_id is set
         plan = BuildPlan.model_validate(plan_data)
+        
+        # Tag each file with the correct language
+        for milestone in plan.milestones:
+            for file_plan in milestone.files:
+                from .models import FilePlanLanguage
+                file_plan.language_tag = FilePlanLanguage(language=file_plan.language)
+        
     except json.JSONDecodeError as e:
         console.print(f"[red]Failed to parse plan JSON: {e}[/red]")
         console.print(f"[yellow]Raw LLM response:[/yellow]")

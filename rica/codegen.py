@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import List
 
 from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 
 from .db import db
 from .llm import llm
@@ -140,11 +142,12 @@ def build_project(plan: BuildPlan, workspace: Path, console: Console) -> List[Ge
         with open(target_path, 'w', encoding='utf-8') as f:
             f.write(content)
         
-        # Create GeneratedFile record
+        # Create GeneratedFile record with language tagging
+        file_language = file_plan.language_tag.language if file_plan.language_tag else file_plan.language
         generated_file = GeneratedFile(
             path=file_plan.path,
             content=content,
-            language=file_plan.language,
+            language=file_language,
             generated_at=datetime.utcnow().isoformat() + "Z"
         )
         generated_files.append(generated_file)
@@ -156,6 +159,9 @@ def build_project(plan: BuildPlan, workspace: Path, console: Console) -> List[Ge
     
     # Write rica.lock file
     _write_lock_file(plan, workspace, generated_files)
+    
+    # Show per-language file summary
+    _show_language_summary(generated_files, console)
     
     return generated_files
 
@@ -218,6 +224,33 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
         console.print(f"  [dim]Generated conftest.py for src/ layout[/dim]")
     except Exception as e:
         console.print(f"  [yellow]Warning: Could not write conftest.py: {e}[/yellow]")
+
+
+def _show_language_summary(generated_files: List[GeneratedFile], console: Console) -> None:
+    """Display a summary panel grouping generated files by language."""
+    if not generated_files:
+        return
+    
+    # Count files by language
+    language_counts: dict[str, int] = {}
+    for gen_file in generated_files:
+        lang = gen_file.language
+        language_counts[lang] = language_counts.get(lang, 0) + 1
+    
+    # Create summary table
+    table = Table(show_header=False, box=None, padding=0)
+    table.add_column("Language", style="bold")
+    table.add_column("Files", justify="right")
+    
+    for language, count in sorted(language_counts.items()):
+        table.add_row(language, str(count))
+    
+    console.print()
+    console.print(Panel(
+        table,
+        title="Build Summary",
+        border_style="dim"
+    ))
 
 
 def _write_lock_file(plan: BuildPlan, workspace: Path, generated_files: List[GeneratedFile]) -> None:
