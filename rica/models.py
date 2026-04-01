@@ -81,3 +81,33 @@ class ExplainReport(BaseModel):
     files_analyzed: int
     explanation: str
     explained_at: str
+
+
+class RefactorChange(BaseModel):
+    path: str
+    content: str
+
+
+class RefactorReport(BaseModel):
+    path: str
+    language: str
+    goal: str
+    files_analyzed: int
+    changes: list[RefactorChange]
+    refactored_at: str
+
+
+class GeneratedTest(BaseModel):
+    """Represents a generated test file."""
+    path: str
+    content: str
+
+
+class TestGenReport(BaseModel):
+    """Report for test generation session."""
+    session_id: str
+    language: str
+    goal: str
+    files_analyzed: int
+    tests_generated: list[GeneratedTest]
+    generated_at: str

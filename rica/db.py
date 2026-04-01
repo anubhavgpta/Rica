@@ -129,6 +129,34 @@ class Database:
                 )
             """)
             
+            # Create refactors table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS refactors (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    path TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    goal TEXT NOT NULL,
+                    files_analyzed INTEGER NOT NULL,
+                    files_changed INTEGER NOT NULL,
+                    report_json TEXT NOT NULL,
+                    refactored_at TEXT NOT NULL
+                )
+            """)
+            
+            # Create test_generations table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS test_generations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    goal TEXT NOT NULL,
+                    files_analyzed INTEGER NOT NULL,
+                    tests_generated INTEGER NOT NULL,
+                    report_json TEXT NOT NULL,
+                    generated_at TEXT NOT NULL
+                )
+            """)
+            
             conn.commit()
     
     def create_session(self, session_id: str, goal: str, language: str) -> None:
@@ -429,4 +457,82 @@ def list_explanations(path_filter: str | None = None) -> list[dict]:
     
     # Get column names from cursor description
     columns = [description[0] for description in conn.execute("SELECT * FROM explanations LIMIT 1").description] if rows else []
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def save_refactor(report: "RefactorReport") -> None:
+    """Persist a RefactorReport to the refactors table."""
+    conn = get_connection()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO refactors (path, language, goal, files_analyzed, files_changed, report_json, refactored_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                report.path,
+                report.language,
+                report.goal,
+                report.files_analyzed,
+                len(report.changes),
+                report.model_dump_json(),
+                report.refactored_at,
+            ),
+        )
+
+
+def list_refactors(path_filter: str | None = None) -> list[dict]:
+    """Return all refactor rows, optionally filtered by path prefix."""
+    conn = get_connection()
+    if path_filter:
+        rows = conn.execute(
+            "SELECT * FROM refactors WHERE path = ? ORDER BY refactored_at DESC",
+            (path_filter,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM refactors ORDER BY refactored_at DESC"
+        ).fetchall()
+    
+    # Get column names from cursor description
+    columns = [description[0] for description in conn.execute("SELECT * FROM refactors LIMIT 1").description] if rows else []
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def save_test_generation(report: "TestGenReport") -> None:
+    """Persist a TestGenReport to the test_generations table."""
+    conn = get_connection()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO test_generations (session_id, language, goal, files_analyzed, tests_generated, report_json, generated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                report.session_id,
+                report.language,
+                report.goal,
+                report.files_analyzed,
+                len(report.tests_generated),
+                report.model_dump_json(),
+                report.generated_at,
+            ),
+        )
+
+
+def list_test_generations(session_id: str | None = None) -> list[dict]:
+    """Return all test generation rows, optionally filtered by session_id."""
+    conn = get_connection()
+    if session_id:
+        rows = conn.execute(
+            "SELECT * FROM test_generations WHERE session_id = ? ORDER BY generated_at DESC",
+            (session_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM test_generations ORDER BY generated_at DESC"
+        ).fetchall()
+    
+    # Get column names from cursor description
+    columns = [description[0] for description in conn.execute("SELECT * FROM test_generations LIMIT 1").description] if rows else []
     return [dict(zip(columns, row)) for row in rows]

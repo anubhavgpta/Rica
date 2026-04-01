@@ -16,17 +16,19 @@ from rich.tree import Tree
 
 from .config import PLANS_DIR, RICA_HOME
 from .codegen import build_project
-from .db import db, save_explanation, list_explanations
+from .db import db, save_explanation, list_explanations, save_refactor, list_refactors, list_test_generations
 from .debugger import classify_error, generate_fix
 from .executor import detect_server, run_command
 from .explainer import explain_codebase
 from .llm import llm
 from .models import BuildPlan, ExplainReport
 from .planner import create_plan
+from .refactorer import refactor_codebase, apply_refactor
 from .registry import get_language_config, LANGUAGE_REGISTRY
 from .reviewer import review_codebase, fix_file
 from .models import ReviewIssue, ReviewReport
 from .db import save_review, get_reviews_for_path
+from .test_generator import generate_tests
 
 app = typer.Typer(help="Rica - Language-Agnostic Autonomous Coding Agent")
 console = Console()
@@ -1241,6 +1243,185 @@ def explanations(
             row["explained_at"],
         )
 
+    console.print(table)
+
+
+@app.command()
+def refactor(
+    path: str = typer.Argument(..., help="Path to the codebase directory to refactor"),
+    goal: str = typer.Option(..., "--goal", "-g", help="Refactor instruction"),
+    lang: str = typer.Option(None, "--lang", help="Override language detection"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without writing"),
+) -> None:
+    """Refactor a codebase according to the specified goal."""
+    print_banner()
+    
+    # Resolve and validate path
+    target_path = Path(path).resolve()
+    if not target_path.exists():
+        console.print(f"[red]Path does not exist: {target_path}[/red]")
+        raise typer.Exit(1)
+    
+    if not target_path.is_dir():
+        console.print(f"[red]Path is not a directory: {target_path}[/red]")
+        raise typer.Exit(1)
+    
+    try:
+        # Generate refactor report
+        report = refactor_codebase(target_path, goal, lang, console)
+        
+        if dry_run:
+            # Show diff for each change
+            for change in report.changes:
+                original_path = target_path / change.path
+                original_content = ""
+                if original_path.exists():
+                    original_content = original_path.read_text(encoding="utf-8")
+                
+                diff = difflib.unified_diff(
+                    original_content.splitlines(keepends=True),
+                    change.content.splitlines(keepends=True),
+                    fromfile=f"a/{change.path}",
+                    tofile=f"b/{change.path}",
+                    lineterm=""
+                )
+                
+                diff_text = "".join(diff)
+                if diff_text:
+                    console.print(
+                        Panel(
+                            diff_text,
+                            title=change.path,
+                            border_style="dim"
+                        )
+                    )
+            
+            console.print(f"[dim]Dry run — {len(report.changes)} file(s) would be changed. Nothing written.[/dim]")
+        else:
+            # Apply changes and save report
+            if report.changes:
+                apply_refactor(report, target_path, console)
+                save_refactor(report)
+                console.print(f"[dim]Refactor complete. {len(report.changes)} file(s) changed.[/dim]")
+            else:
+                console.print("[dim]No files needed changing.[/dim]")
+                
+    except Exception as e:
+        console.print(f"[red]Error during refactor: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def refactors(
+    path: str = typer.Option(None, "--path", help="Filter by directory path"),
+) -> None:
+    """List past refactor sessions."""
+    print_banner()
+    
+    rows = list_refactors(path)
+    
+    if not rows:
+        console.print("No refactor sessions found.", style="dim")
+        return
+    
+    table = Table(title="Refactor Sessions")
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("Path", style="magenta")
+    table.add_column("Language", style="green")
+    table.add_column("Goal", style="yellow")
+    table.add_column("Files Analyzed", justify="right", style="blue")
+    table.add_column("Files Changed", justify="right", style="red")
+    table.add_column("Date", style="dim")
+    
+    for row in rows:
+        table.add_row(
+            str(row["id"]),
+            row["path"],
+            row["language"],
+            row["goal"][:50] + "..." if len(row["goal"]) > 50 else row["goal"],
+            str(row["files_analyzed"]),
+            str(row["files_changed"]),
+            row["refactored_at"],
+        )
+    
+    console.print(table)
+
+
+@app.command()
+def gen_tests(session_id: str) -> None:
+    """Generate tests for a completed build."""
+    print_banner()
+    
+    try:
+        report = generate_tests(session_id, console)
+        
+        # Display test files written
+        test_files = [test.path for test in report.tests_generated]
+        if test_files:
+            console.print(Panel(
+                "\n".join(test_files),
+                title="Test Files Written",
+                border_style="dim"
+            ))
+        
+        console.print(f"[dim]Test generation complete. {len(report.tests_generated)} test file(s) written to workspace.[/dim]")
+        
+    except FileNotFoundError as e:
+        console.print(Panel(
+            str(e),
+            title="Error",
+            border_style="red"
+        ))
+        raise typer.Exit(1)
+    except RuntimeError as e:
+        console.print(Panel(
+            str(e),
+            title="Error",
+            border_style="red"
+        ))
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(Panel(
+            f"Unexpected error: {e}",
+            title="Error",
+            border_style="red"
+        ))
+        raise typer.Exit(1)
+
+
+@app.command()
+def test_generations(
+    session: str = typer.Option(None, "--session", help="Filter by session ID"),
+) -> None:
+    """List test generation sessions."""
+    print_banner()
+    
+    rows = list_test_generations(session)
+    
+    if not rows:
+        console.print("No test generation sessions found.", style="dim")
+        return
+    
+    table = Table(title="Test Generation Sessions")
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("Session ID", style="magenta")
+    table.add_column("Language", style="green")
+    table.add_column("Goal", style="yellow")
+    table.add_column("Files Analyzed", justify="right", style="blue")
+    table.add_column("Tests Generated", justify="right", style="red")
+    table.add_column("Date", style="dim")
+    
+    for row in rows:
+        table.add_row(
+            str(row["id"]),
+            row["session_id"],
+            row["language"],
+            row["goal"][:50] + "..." if len(row["goal"]) > 50 else row["goal"],
+            str(row["files_analyzed"]),
+            str(row["tests_generated"]),
+            row["generated_at"],
+        )
+    
     console.print(table)
 
 

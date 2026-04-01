@@ -1,15 +1,15 @@
 # Rica
 
 <p align="center">
-  <img src="./ricaLogo.png" alt="Rica Banner" width="70%" />
+  <img src="./ricaLogo.png" alt="Rica Banner" width="60%" />
 </p>
 
 
 Language-Agnostic Autonomous Coding Agent
 
 <p align="center">
-  <img src="https://img.shields.io/github/actions/workflow/status/anubhavgpta/rica/ci.yml?branch=main&style=flat-square&label=build" />
-  <img src="https://img.shields.io/github/v/release/anubhavgpta/rica?style=flat-square&label=release" />
+  <img src="https://img.shields.io/github/actions/workflow/status/anubhavgpta/Rica/ci.yml?branch=main&style=flat-square&label=build" />
+  <img src="https://img.shields.io/github/v/release/anubhavgpta/Rica?style=flat-square&label=release" />
   <img src="https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" />
 </p>
