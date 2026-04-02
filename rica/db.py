@@ -183,6 +183,17 @@ class Database:
                 )
             """)
             
+            # Create tags table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tags (
+                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    tag        TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(session_id, tag)
+                )
+            """)
+            
             conn.commit()
     
     def create_session(self, session_id: str, goal: str, language: str) -> None:
@@ -729,3 +740,89 @@ def get_executions(session_id: str) -> list[dict]:
     )
     columns = [desc[0] for desc in cursor.description]
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+def add_tag(session_id: str, tag: str) -> bool:
+    """Insert a tag for a session. Returns True on success, False if tag already exists."""
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO tags (session_id, tag, created_at) VALUES (?, ?, ?)",
+                (session_id, tag, datetime.utcnow().isoformat() + "Z")
+            )
+        return True
+    except sqlite3.IntegrityError:
+        # UNIQUE constraint violation - tag already exists
+        return False
+    except Exception:
+        # Re-raise any other DB error
+        raise
+
+
+def remove_tag(session_id: str, tag: str) -> bool:
+    """Remove a tag from a session. Returns True if tag was removed, False if not found."""
+    conn = get_connection()
+    with conn:
+        cursor = conn.execute(
+            "DELETE FROM tags WHERE session_id = ? AND tag = ?",
+            (session_id, tag)
+        )
+        return cursor.rowcount > 0
+
+
+def get_tags(session_id: str) -> list[str]:
+    """Get all tags for a session, ordered alphabetically."""
+    conn = get_connection()
+    cursor = conn.execute(
+        "SELECT tag FROM tags WHERE session_id = ? ORDER BY tag ASC",
+        (session_id,)
+    )
+    return [row[0] for row in cursor.fetchall()]
+
+
+def get_sessions_by_tag(tag: str) -> list[dict]:
+    """Get all sessions that have the given tag (case-insensitive)."""
+    conn = get_connection()
+    cursor = conn.execute(
+        """SELECT DISTINCT s.* FROM sessions s
+           JOIN tags t ON s.id = t.session_id
+           WHERE LOWER(t.tag) = LOWER(?)
+           GROUP BY s.id
+           ORDER BY s.created_at DESC""",
+        (tag,)
+    )
+    columns = [desc[0] for desc in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+def search_sessions(query: str) -> list[dict]:
+    """Search sessions by goal text (case-insensitive LIKE)."""
+    conn = get_connection()
+    cursor = conn.execute(
+        """SELECT * FROM sessions 
+           WHERE LOWER(goal) LIKE LOWER(?)
+           ORDER BY created_at DESC""",
+        (f"%{query}%",)
+    )
+    columns = [desc[0] for desc in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+def get_all_tags() -> list[str]:
+    """Get all unique tags across all sessions, sorted alphabetically."""
+    conn = get_connection()
+    cursor = conn.execute("SELECT DISTINCT tag FROM tags ORDER BY tag ASC")
+    return [row[0] for row in cursor.fetchall()]
+
+
+def save_session(goal: str, language: str) -> str:
+    """Save a session and return the session ID."""
+    session_id = str(uuid.uuid4())[:8]
+    conn = get_connection()
+    with conn:
+        conn.execute(
+            "INSERT INTO sessions (id, goal, language, status, created_at) VALUES (?, ?, ?, 'active', ?)",
+            (session_id, goal, language, datetime.utcnow().isoformat() + "Z")
+        )
+    return session_id

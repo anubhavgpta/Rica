@@ -418,11 +418,12 @@ def get_session(session_id: str) -> dict | None:
         session_id: Session ID
         
     Returns:
-        Session dict or None
+        Session dict with tags key or None
     """
     sessions = db.get_sessions()
     for session in sessions:
         if session["id"] == session_id:
+            session["tags"] = db.get_tags(session_id)
             return session
     return None
 
@@ -541,3 +542,74 @@ def get_rebuild_history(session_id: str) -> List[dict]:
         List of rebuild dicts
     """
     return db.get_rebuild_logs(session_id)
+
+
+# Tagging API
+
+def _normalise_tag(tag: str) -> str:
+    """Normalise tag: strip, lowercase, replace spaces with hyphens."""
+    return tag.strip().lower().replace(" ", "-")
+
+
+def tag_session(session_id: str, tag: str) -> bool:
+    """Add a tag to a session.
+    
+    Args:
+        session_id: Session ID
+        tag: Tag to add
+        
+    Returns:
+        True if tag was added, False if it already existed
+        
+    Raises:
+        ValueError: If session does not exist
+    """
+    # Validate session exists
+    session = get_session(session_id)
+    if not session:
+        raise ValueError(f"Session {session_id} does not exist")
+    
+    # Normalise tag and add
+    normalised_tag = _normalise_tag(tag)
+    return db.add_tag(session_id, normalised_tag)
+
+
+def untag_session(session_id: str, tag: str) -> bool:
+    """Remove a tag from a session.
+    
+    Args:
+        session_id: Session ID
+        tag: Tag to remove
+        
+    Returns:
+        True if tag was removed, False if it wasn't present
+        
+    Raises:
+        ValueError: If session does not exist
+    """
+    # Validate session exists
+    session = get_session(session_id)
+    if not session:
+        raise ValueError(f"Session {session_id} does not exist")
+    
+    # Normalise tag and remove
+    normalised_tag = _normalise_tag(tag)
+    return db.remove_tag(session_id, normalised_tag)
+
+
+def search_sessions(query: str) -> List[dict]:
+    """Search sessions by goal text.
+    
+    Args:
+        query: Search query
+        
+    Returns:
+        List of session dicts with additional "tags" key
+    """
+    results = db.search_sessions(query)
+    
+    # Add tags to each result
+    for result in results:
+        result["tags"] = db.get_tags(result["id"])
+    
+    return results

@@ -16,7 +16,7 @@ from rich.tree import Tree
 
 from .config import PLANS_DIR, RICA_HOME
 from .codegen import build_project
-from .db import db, save_explanation, list_explanations, save_refactor, list_refactors, list_test_generations, get_rebuild_logs
+from .db import db, save_explanation, list_explanations, save_refactor, list_refactors, list_test_generations, get_rebuild_logs, add_tag, remove_tag, get_tags, get_sessions_by_tag, search_sessions, get_all_tags, get_sessions
 from .debugger import classify_error, generate_fix
 from .executor import detect_server, run_command
 from .explainer import explain_codebase
@@ -1568,6 +1568,196 @@ def main(
 
 if __name__ == "__main__":
     app()
+
+
+@app.command()
+def tag(
+    session_id: str = typer.Argument(..., help="Session ID to tag"),
+    tag: str = typer.Argument(..., help="Tag to add")
+) -> None:
+    """Add a tag to a session."""
+    print_banner()
+    
+    # Validate session exists
+    sessions = get_sessions()
+    session = next((s for s in sessions if s["id"] == session_id), None)
+    if not session:
+        console.print(Panel(
+            f"Session {session_id} not found",
+            title="Error",
+            border_style="red"
+        ))
+        raise typer.Exit(1)
+    
+    # Normalise tag
+    normalised_tag = tag.strip().lower().replace(" ", "-")
+    
+    # Add tag
+    if add_tag(session_id, normalised_tag):
+        console.print(f"[dim]Tagged session {session_id} with '{normalised_tag}'[/dim]")
+    else:
+        console.print(f"[dim]Session {session_id} already has tag '{normalised_tag}'[/dim]")
+
+
+@app.command()
+def untag(
+    session_id: str = typer.Argument(..., help="Session ID to untag"),
+    tag: str = typer.Argument(..., help="Tag to remove")
+) -> None:
+    """Remove a tag from a session."""
+    print_banner()
+    
+    # Validate session exists
+    sessions = get_sessions()
+    session = next((s for s in sessions if s["id"] == session_id), None)
+    if not session:
+        console.print(Panel(
+            f"Session {session_id} not found",
+            title="Error",
+            border_style="red"
+        ))
+        raise typer.Exit(1)
+    
+    # Normalise tag
+    normalised_tag = tag.strip().lower().replace(" ", "-")
+    
+    # Remove tag
+    if remove_tag(session_id, normalised_tag):
+        console.print(f"[dim]Removed tag '{normalised_tag}' from session {session_id}[/dim]")
+    else:
+        console.print(f"[dim]Session {session_id} does not have tag '{normalised_tag}'[/dim]")
+
+
+@app.command()
+def tags(
+    session: Optional[str] = typer.Option(None, "--session", help="Show tags for specific session")
+) -> None:
+    """Show tags."""
+    print_banner()
+    
+    if session:
+        # Show tags for specific session
+        tag_list = get_tags(session)
+        if tag_list:
+            tags_text = "\n".join(f"  {tag}" for tag in tag_list)
+            console.print(Panel(
+                tags_text,
+                title=f"Tags — {session}",
+                border_style="dim"
+            ))
+        else:
+            console.print(f"No tags for session {session}.")
+    else:
+        # Show all tags with session counts
+        all_tags = get_all_tags()
+        if not all_tags:
+            console.print("No tags found.")
+            return
+        
+        table = Table(title="All Tags")
+        table.add_column("Tag", style="cyan")
+        table.add_column("Sessions", justify="right", style="blue")
+        
+        for tag in all_tags:
+            sessions_with_tag = get_sessions_by_tag(tag)
+            table.add_row(tag, str(len(sessions_with_tag)))
+        
+        console.print(table)
+
+
+@app.command()
+def search(
+    query: str = typer.Argument(..., help="Search query")
+) -> None:
+    """Search sessions by goal text."""
+    print_banner()
+    
+    results = search_sessions(query)
+    
+    if not results:
+        console.print(f"No sessions matched '{query}'.")
+        return
+    
+    # Add tags to each result
+    for result in results:
+        result["tags"] = get_tags(result["id"])
+    
+    # Display results table
+    table = Table(title=f"Search Results — \"{query}\"")
+    table.add_column("Session ID", style="cyan")
+    table.add_column("Goal", style="white")
+    table.add_column("Language", style="green")
+    table.add_column("Status", style="yellow")
+    table.add_column("Tags", style="dim")
+    table.add_column("Created", style="blue")
+    
+    for session in results:
+        goal = session["goal"][:60] + "..." if len(session["goal"]) > 60 else session["goal"]
+        tags_text = ", ".join(session["tags"]) if session["tags"] else ""
+        created = session["created_at"][:19].replace("T", " ")
+        
+        table.add_row(
+            session["id"],
+            goal,
+            session["language"],
+            session["status"],
+            tags_text,
+            created
+        )
+    
+    console.print(table)
+
+
+@app.command()
+def sessions(
+    tag: Optional[str] = typer.Option(None, "--tag", help="Filter by tag")
+) -> None:
+    """List sessions."""
+    print_banner()
+    
+    if tag:
+        # Filter by tag
+        session_list = get_sessions_by_tag(tag)
+        if not session_list:
+            console.print(f"No sessions with tag '{tag}'.")
+            return
+    else:
+        # Show all sessions (same as plans command)
+        session_list = db.list_sessions()
+    
+    if not session_list:
+        console.print("No sessions found.")
+        return
+    
+    # Add tags to each result
+    for session in session_list:
+        session["tags"] = get_tags(session["id"])
+    
+    # Display table
+    title = f"Sessions — Tag: {tag}" if tag else "All Sessions"
+    table = Table(title=title)
+    table.add_column("Session ID", style="cyan")
+    table.add_column("Goal", style="white")
+    table.add_column("Language", style="green")
+    table.add_column("Status", style="yellow")
+    table.add_column("Tags", style="dim")
+    table.add_column("Created", style="blue")
+    
+    for session in session_list:
+        goal = session["goal"][:60] + "..." if len(session["goal"]) > 60 else session["goal"]
+        tags_text = ", ".join(session["tags"]) if session["tags"] else ""
+        created = session["created_at"][:19].replace("T", " ")
+        
+        table.add_row(
+            session["id"],
+            goal,
+            session["language"],
+            session["status"],
+            tags_text,
+            created
+        )
+    
+    console.print(table)
 
 
 @app.command()

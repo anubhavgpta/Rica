@@ -10,6 +10,7 @@ EXPECTED_FUNCTIONS = [
     "get_session", "list_sessions", "get_plan", "get_builds",
     "get_executions", "get_reviews", "get_explanations",
     "get_refactors", "get_test_generations", "get_rebuild_history",
+    "tag_session", "untag_session", "search_sessions",
 ]
 
 def test_all_functions_exported():
