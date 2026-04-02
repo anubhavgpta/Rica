@@ -65,6 +65,8 @@ from .db import save_review, get_reviews_for_path
 from .test_generator import generate_tests
 from . import rebuilder, snapshotter, dep_graph
 from .models import FileSnapshot, RebuildReport
+from .exporter import export_session
+from .importer import import_session
 
 app = typer.Typer(help="Rica - Language-Agnostic Autonomous Coding Agent")
 
@@ -1824,3 +1826,68 @@ def dashboard(
     """Launch the interactive Rica session dashboard."""
     from rica.dashboard import run_dashboard
     run_dashboard(refresh=refresh)
+
+
+@app.command("export")
+def export_cmd(
+    session_id: str = typer.Argument(..., help="Session ID to export"),
+    out: Optional[Path] = typer.Option(
+        None, "--out", "-o",
+        help="Output path for .rica file (default: ./<session_id>.rica)"
+    ),
+) -> None:
+    """Export a session to a portable .rica archive."""
+    console = get_console()
+    out_path = out if out else Path.cwd() / f"{session_id}.rica"
+    try:
+        summary = export_session(session_id, out_path)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    # Display result panel
+    lines = [
+        f"Archive : {out_path}",
+        f"Size    : {summary['archive_size_bytes']:,} bytes",
+        f"Plan    : {'yes' if summary['plan_included'] else 'no'}",
+        f"Files   : {summary['workspace_file_count']} workspace file(s)",
+        f"Tables  : {', '.join(summary['tables_exported'])}",
+    ]
+    from rich.panel import Panel
+    console.print(Panel(
+        "\n".join(lines),
+        title=f"Exported — {session_id}",
+        border_style="dim",
+    ))
+
+
+@app.command("import")
+def import_cmd(
+    file: Path = typer.Argument(..., help="Path to .rica archive"),
+    tag: Optional[str] = typer.Option(
+        None, "--tag", "-t",
+        help="Extra tag to apply to the imported session"
+    ),
+) -> None:
+    """Import a session from a .rica archive into a new session ID."""
+    console = get_console()
+    try:
+        summary = import_session(file, extra_tag=tag)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    lines = [
+        f"New session : {summary['new_session_id']}",
+        f"Original ID : {summary['original_session_id']}",
+        f"Goal        : {summary['goal']}",
+        f"Plan        : {'restored' if summary['plan_restored'] else 'not found'}",
+        f"Files       : {summary['workspace_files_restored']} workspace file(s)",
+        f"Tags        : {', '.join(summary['tags_applied']) if summary['tags_applied'] else 'none'}",
+    ]
+    from rich.panel import Panel
+    console.print(Panel(
+        "\n".join(lines),
+        title="Imported Session",
+        border_style="dim",
+    ))
