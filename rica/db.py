@@ -2,7 +2,7 @@
 
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -202,7 +202,7 @@ class Database:
             conn.execute("""
                 INSERT INTO sessions (id, goal, language, status, created_at)
                 VALUES (?, ?, ?, 'active', ?)
-            """, (session_id, goal, language, datetime.utcnow().isoformat()))
+            """, (session_id, goal, language, datetime.now(timezone.utc).isoformat()))
             conn.commit()
     
     def save_plan(self, plan_id: str, session_id: str, plan_json: str) -> None:
@@ -211,7 +211,7 @@ class Database:
             conn.execute("""
                 INSERT INTO plans (id, session_id, plan_json, approved, created_at)
                 VALUES (?, ?, ?, 0, ?)
-            """, (plan_id, session_id, plan_json, datetime.utcnow().isoformat()))
+            """, (plan_id, session_id, plan_json, datetime.now(timezone.utc).isoformat()))
             conn.commit()
     
     def get_plan(self, session_id: str) -> Optional[str]:
@@ -608,7 +608,7 @@ def save_snapshot(session_id: str, snapshots: list[dict]) -> None:
                 snapshot["path"],
                 snapshot.get("sha256"),
                 snapshot["mtime"],
-                datetime.utcnow().isoformat() + "Z"
+                datetime.now(timezone.utc).isoformat() + "Z"
             ))
 
 
@@ -635,7 +635,7 @@ def save_rebuild_log(session_id: str, checked: int, changed: int,
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
             session_id, checked, changed, cascaded, rewritten, skipped,
-            datetime.utcnow().isoformat() + "Z"
+            datetime.now(timezone.utc).isoformat() + "Z"
         ))
 
 
@@ -749,7 +749,7 @@ def add_tag(session_id: str, tag: str) -> bool:
         with conn:
             conn.execute(
                 "INSERT INTO tags (session_id, tag, created_at) VALUES (?, ?, ?)",
-                (session_id, tag, datetime.utcnow().isoformat() + "Z")
+                (session_id, tag, datetime.now(timezone.utc).isoformat() + "Z")
             )
         return True
     except sqlite3.IntegrityError:
@@ -797,13 +797,22 @@ def get_sessions_by_tag(tag: str) -> list[dict]:
 
 
 def search_sessions(query: str) -> list[dict]:
-    """Search sessions by goal text (case-insensitive LIKE)."""
+    """Search sessions by goal, language, status, and tags."""
     conn = get_connection()
+    q = f"%{query}%"
     cursor = conn.execute(
-        """SELECT * FROM sessions 
-           WHERE LOWER(goal) LIKE LOWER(?)
-           ORDER BY created_at DESC""",
-        (f"%{query}%",)
+        """
+        SELECT DISTINCT s.*
+        FROM sessions s
+        LEFT JOIN tags t ON t.session_id = s.id
+        WHERE
+            LOWER(s.goal)        LIKE ?
+         OR LOWER(s.language)   LIKE ?
+         OR LOWER(s.status)      LIKE ?
+         OR LOWER(COALESCE(t.tag, '')) LIKE ?
+        ORDER BY s.created_at DESC
+        """,
+        (q, q, q, q)
     )
     columns = [desc[0] for desc in cursor.description]
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
@@ -823,6 +832,6 @@ def save_session(goal: str, language: str) -> str:
     with conn:
         conn.execute(
             "INSERT INTO sessions (id, goal, language, status, created_at) VALUES (?, ?, ?, 'active', ?)",
-            (session_id, goal, language, datetime.utcnow().isoformat() + "Z")
+            (session_id, goal, language, datetime.now(timezone.utc).isoformat() + "Z")
         )
     return session_id

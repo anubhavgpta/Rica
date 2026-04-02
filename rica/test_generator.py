@@ -2,7 +2,7 @@
 
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 
@@ -269,7 +269,7 @@ def generate_tests(session_id: str, console: Console) -> TestGenReport:
         goal=plan.goal,
         files_analyzed=total_files_analyzed,
         tests_generated=all_tests,
-        generated_at=datetime.utcnow().isoformat() + "Z"
+        generated_at=datetime.now(timezone.utc).isoformat() + "Z"
     )
     
     # Persist result

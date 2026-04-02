@@ -3,7 +3,7 @@
 import json
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 
@@ -148,7 +148,7 @@ def build_project(plan: BuildPlan, workspace: Path, console: Console) -> List[Ge
             path=file_plan.path,
             content=content,
             language=file_language,
-            generated_at=datetime.utcnow().isoformat() + "Z"
+            generated_at=datetime.now(timezone.utc).isoformat() + "Z"
         )
         generated_files.append(generated_file)
     
@@ -238,9 +238,9 @@ def _show_language_summary(generated_files: List[GeneratedFile], console: Consol
         language_counts[lang] = language_counts.get(lang, 0) + 1
     
     # Create summary table
-    table = Table(show_header=False, box=None, padding=0)
-    table.add_column("Language", style="bold")
-    table.add_column("Files", justify="right")
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Language", style="bold", min_width=15)
+    table.add_column("Files", justify="right", min_width=5)
     
     for language, count in sorted(language_counts.items()):
         table.add_row(language, str(count))
@@ -259,7 +259,7 @@ def _write_lock_file(plan: BuildPlan, workspace: Path, generated_files: List[Gen
         "session_id": plan.session_id,
         "goal": plan.goal,
         "language": plan.language,
-        "built_at": datetime.utcnow().isoformat() + "Z",
+        "built_at": datetime.now(timezone.utc).isoformat() + "Z",
         "files": [
             {
                 "path": gen_file.path,

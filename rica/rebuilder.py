@@ -2,6 +2,8 @@
 
 from pathlib import Path
 from typing import List
+from datetime import datetime, timezone
+import hashlib
 
 from . import db
 from .models import BuildPlan, RebuildReport
@@ -11,9 +13,7 @@ from .llm import generate
 from .codegen import _strip_fences
 from .config import RICA_HOME
 import json
-from datetime import datetime
 from rich.console import Console
-import hashlib
 
 console = Console()
 
@@ -81,7 +81,7 @@ def rebuild_changed(
             files_cascaded=[],
             files_rewritten=[],
             files_skipped=[],
-            rebuilt_at=datetime.utcnow().isoformat() + "Z"
+            rebuilt_at=datetime.now(timezone.utc).isoformat() + "Z"
         )
     
     # 3. Diff to find changed files
@@ -99,7 +99,7 @@ def rebuild_changed(
             files_cascaded=[],
             files_rewritten=[],
             files_skipped=[fp.path for milestone in plan.milestones for fp in milestone.files],
-            rebuilt_at=datetime.utcnow().isoformat() + "Z"
+            rebuilt_at=datetime.now(timezone.utc).isoformat() + "Z"
         )
     
     # 5. Build dependency graph
@@ -197,5 +197,5 @@ Return ONLY the raw file content. No markdown fences, no explanations, no extra 
         files_cascaded=cascaded_paths,
         files_rewritten=rewritten,
         files_skipped=skipped,
-        rebuilt_at=datetime.utcnow().isoformat() + "Z"
+        rebuilt_at=datetime.now(timezone.utc).isoformat() + "Z"
     )

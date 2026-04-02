@@ -1,7 +1,7 @@
 """Command execution module for Rica with timeout handling and output capture."""
 
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 
@@ -31,7 +31,7 @@ def run_command(
     # Hard cap timeout at 60 seconds minimum
     effective_timeout = max(timeout, 60)
     
-    executed_at = datetime.utcnow().isoformat() + "Z"
+    executed_at = datetime.now(timezone.utc).isoformat() + "Z"
     
     try:
         # Start the process

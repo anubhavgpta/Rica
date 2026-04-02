@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.console import Console
@@ -233,7 +233,7 @@ def refactor_codebase(path: Path, goal: str, language: str | None, console: Cons
         goal=goal,
         files_analyzed=total_files_analyzed,
         changes=all_changes,
-        refactored_at=datetime.utcnow().isoformat() + "Z"
+        refactored_at=datetime.now(timezone.utc).isoformat() + "Z"
     )
 
 

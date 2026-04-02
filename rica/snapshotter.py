@@ -2,7 +2,7 @@
 
 import hashlib
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List
 
 from . import db
@@ -40,7 +40,7 @@ def take_snapshot(session_id: str, workspace: Path) -> List[FileSnapshot]:
                     path=str(rel_path),
                     sha256=sha256,
                     mtime=mtime,
-                    snapshotted_at=datetime.utcnow().isoformat() + "Z"
+                    snapshotted_at=datetime.now(timezone.utc).isoformat() + "Z"
                 )
                 snapshots.append(snapshot)
                 

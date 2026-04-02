@@ -4,7 +4,7 @@ import difflib
 import glob
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -14,7 +14,41 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
 
+from .console import get_console
+
 from .config import PLANS_DIR, RICA_HOME
+
+
+def _langs(session) -> str:
+    """Helper to handle both single languages and language lists."""
+    # Try to get languages from plan_json first
+    try:
+        plan_data = db.get_plan_for_session(session["id"])
+        if plan_data:
+            import json
+            plan = json.loads(plan_data["plan_json"])
+            if "languages" in plan and plan["languages"]:
+                return " / ".join(plan["languages"])
+    except:
+        pass
+    
+    # Fall back to the language field
+    language_field = session["language"]
+    if isinstance(language_field, list):
+        return " / ".join(language_field)
+    elif isinstance(language_field, str):
+        # Check if it looks like a JSON-encoded list
+        if language_field.startswith('[') and language_field.endswith(']'):
+            try:
+                import json
+                lang_list = json.loads(language_field)
+                if isinstance(lang_list, list):
+                    return " / ".join(lang_list)
+            except:
+                pass
+        return language_field
+    else:
+        return str(language_field)
 from .codegen import build_project
 from .db import db, save_explanation, list_explanations, save_refactor, list_refactors, list_test_generations, get_rebuild_logs, add_tag, remove_tag, get_tags, get_sessions_by_tag, search_sessions, get_all_tags, get_sessions
 from .debugger import classify_error, generate_fix
@@ -33,7 +67,6 @@ from . import rebuilder, snapshotter, dep_graph
 from .models import FileSnapshot, RebuildReport
 
 app = typer.Typer(help="Rica - Language-Agnostic Autonomous Coding Agent")
-console = Console()
 
 PACKAGE_MANAGER_HINTS: dict[str, str] = {
     "go":         "go mod tidy && go build ./...",
@@ -50,6 +83,7 @@ PACKAGE_MANAGER_HINTS: dict[str, str] = {
 
 def print_banner() -> None:
     """Print Rica banner."""
+    console = get_console()
     banner = r"""                   _..._               
                 .-'_..._''.            
         .--.  .' .'      '.\           
@@ -71,6 +105,7 @@ def print_banner() -> None:
 
 def display_plan(plan: BuildPlan) -> None:
     """Display a plan beautifully using Rich."""
+    console = get_console()
     # Main panel with goal and languages
     if hasattr(plan, 'languages') and len(plan.languages) > 1:
         info_text = f"Languages: [bold green]{', '.join(plan.languages)}[/bold green]\n"
@@ -166,6 +201,7 @@ def plan(
     lang: Optional[str] = typer.Option(None, "--lang", "-l", help="Preferred language"),
 ) -> None:
     """Create a new build plan."""
+    console = get_console()
     print_banner()
     
     # Generate session ID
@@ -206,6 +242,7 @@ def plan(
 @app.command()
 def plans() -> None:
     """List all saved plans."""
+    console = get_console()
     print_banner()
     
     sessions = db.list_sessions()
@@ -229,7 +266,7 @@ def plans() -> None:
         table.add_row(
             session["id"],
             goal,
-            session["language"],
+            _langs(session),
             status,
             created
         )
@@ -240,6 +277,7 @@ def plans() -> None:
 @app.command()
 def show(session_id: str) -> None:
     """Show details of a saved plan."""
+    console = get_console()
     print_banner()
     
     # Load plan from file
@@ -264,6 +302,7 @@ def build(
     workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace directory")
 ) -> None:
     """Build a project from an approved plan."""
+    console = get_console()
     print_banner()
     
     # Load plan from DB
@@ -294,7 +333,7 @@ def build(
     
     # Insert build record
     build_id = str(uuid.uuid4())
-    started_at = datetime.utcnow().isoformat() + "Z"
+    started_at = datetime.now(timezone.utc).isoformat() + "Z"
     db.insert_build(build_id, session_id, str(workspace_path), started_at)
     
     # Show build starting panel
@@ -334,7 +373,7 @@ def build(
             )
         
         # Complete build
-        completed_at = datetime.utcnow().isoformat() + "Z"
+        completed_at = datetime.now(timezone.utc).isoformat() + "Z"
         db.complete_build(build_id, completed_at)
         
         console.print(f"[green]Build complete. Workspace: {workspace_path}[/green]")
@@ -351,6 +390,7 @@ def build(
 @app.command()
 def builds() -> None:
     """List all build sessions."""
+    console = get_console()
     print_banner()
     
     builds = db.get_all_builds()
@@ -396,6 +436,7 @@ def workspace(session_id: str) -> None:
 @app.command()
 def check(session_id: str) -> None:
     """Run compile/syntax check on a completed build."""
+    console = get_console()
     print_banner()
     
     # Load build
@@ -458,6 +499,7 @@ def check(session_id: str) -> None:
 @app.command()
 def run(session_id: str, timeout: int = typer.Option(10, "--timeout")) -> None:
     """Execute the built project and interpret output with LLM."""
+    console = get_console()
     print_banner()
     
     # Load build
@@ -539,6 +581,7 @@ def run(session_id: str, timeout: int = typer.Option(10, "--timeout")) -> None:
 @app.command()
 def test(session_id: str) -> None:
     """Run the test suite for a completed build."""
+    console = get_console()
     print_banner()
     
     # Load build
@@ -616,6 +659,7 @@ def debug(
     timeout: int = typer.Option(30, "--timeout", help="Timeout per run in seconds"),
 ) -> None:
     """Debug a session using autonomous fix generation."""
+    console = get_console()
     print_banner()
     
     # Load plan
@@ -650,7 +694,7 @@ def debug(
         console.print(f"[dim]Resuming debug session from iteration {start_iteration}[/dim]")
     else:
         debug_session_id = str(uuid.uuid4())
-        started_at = datetime.utcnow().isoformat() + "Z"
+        started_at = datetime.now(timezone.utc).isoformat() + "Z"
         db.insert_debug_session(debug_session_id, session_id, started_at)
         start_iteration = 0
     
@@ -710,7 +754,7 @@ def debug(
         
         if run_result.exit_code == 0:
             console.print("[green]Project runs successfully. No debug needed.[/green]")
-            completed_at = datetime.utcnow().isoformat() + "Z"
+            completed_at = datetime.now(timezone.utc).isoformat() + "Z"
             db.complete_debug_session(debug_session_id, "success", completed_at)
             return
     
@@ -773,7 +817,7 @@ def debug(
         
         # Persist iteration
         iteration_id = str(uuid.uuid4())
-        fixed_at = datetime.utcnow().isoformat() + "Z"
+        fixed_at = datetime.now(timezone.utc).isoformat() + "Z"
         db.insert_debug_iteration(
             id=iteration_id,
             debug_session_id=debug_session_id,
@@ -787,7 +831,7 @@ def debug(
         
         # Check if successful
         if run_result.exit_code == 0:
-            completed_at = datetime.utcnow().isoformat() + "Z"
+            completed_at = datetime.now(timezone.utc).isoformat() + "Z"
             db.complete_debug_session(debug_session_id, "success", completed_at)
             
             console.print(Panel(
@@ -799,7 +843,7 @@ def debug(
     
     # If loop exhausted
     else:
-        completed_at = datetime.utcnow().isoformat() + "Z"
+        completed_at = datetime.now(timezone.utc).isoformat() + "Z"
         db.complete_debug_session(debug_session_id, "max_iterations_reached", completed_at)
         console.print(f"[yellow]Max iterations reached ({max_iter}). Review errors manually.[/yellow]")
     
@@ -839,6 +883,7 @@ def debug_history(
     session_id: str = typer.Argument(..., help="Session ID"),
 ) -> None:
     """Show debug history for a session."""
+    console = get_console()
     print_banner()
     
     debug_sessions = db.get_debug_sessions_for_session(session_id)
@@ -955,7 +1000,7 @@ def review(
     lang: str | None = typer.Option(None, "--lang", help="Language override (comma-separated for multi-language)"),
 ) -> None:
     """Analyze an existing codebase for issues."""
-    console = Console()
+    console = get_console()
     print_banner()
 
     target = Path(path).resolve()
@@ -978,7 +1023,7 @@ def review(
         issue_count=len(report.issues),
         error_count=error_count,
         report_json=report.model_dump_json(),
-        reviewed_at=datetime.utcnow().isoformat() + "Z",
+        reviewed_at=datetime.now(timezone.utc).isoformat() + "Z",
     )
     console.print(f"[dim]Review saved. ID: {review_id}[/dim]")
 
@@ -993,7 +1038,7 @@ def fix(
     dry_run: bool = typer.Option(False, "--dry-run", help="Show diffs without writing"),
 ) -> None:
     """Apply fixes for error-severity issues in a codebase."""
-    console = Console()
+    console = get_console()
     print_banner()
 
     target = Path(path).resolve()
@@ -1069,7 +1114,7 @@ def fix(
         issue_count=remaining,
         error_count=error_count,
         report_json=updated_report.model_dump_json(),
-        reviewed_at=datetime.utcnow().isoformat() + "Z",
+        reviewed_at=datetime.now(timezone.utc).isoformat() + "Z",
     )
 
     _display_review_report(updated_report, console)
@@ -1080,7 +1125,7 @@ def reviews(
     path: str | None = typer.Option(None, "--path", help="Filter by directory path"),
 ) -> None:
     """List past review sessions."""
-    console = Console()
+    console = get_console()
     print_banner()
 
     rows = get_reviews_for_path(path)
@@ -1120,18 +1165,24 @@ def watch(
     lang: Optional[str] = typer.Option(None, "--lang", help="Override language detection"),
     debounce: float = typer.Option(1.5, "--debounce", help="Debounce seconds (default 1.5)"),
 ) -> None:
-    """L6: Watch a directory and auto-review on file changes."""
+    """Watch a directory for changes and rebuild automatically."""
+    console = get_console()
+    print_banner()
+    
     from rica.watcher import watch_path
     watch_path(Path(path).resolve(), lang_override=lang, debounce=debounce, console=console)
 
 
 @app.command()
 def explain(
-    path: str = typer.Argument(..., help="Path to the codebase to explain"),
+    path: str = typer.Argument(..., help="Path to codebase to explain"),
     lang: str = typer.Option(None, "--lang", help="Language override (comma-separated for multi-language)"),
     out: str = typer.Option(None, "--out", help="Write explanation to this .md file"),
 ) -> None:
-    """L7: Explain a codebase in plain English."""
+    """Explain a codebase."""
+    console = get_console()
+    print_banner()
+    
     from rica.registry import LANGUAGE_REGISTRY
     
     # Resolve and validate path
@@ -1235,6 +1286,9 @@ def explanations(
     path: str = typer.Option(None, "--path", help="Filter by path prefix"),
 ) -> None:
     """List past explanation sessions."""
+    console = get_console()
+    print_banner()
+    
     rows = list_explanations(path_filter=path)
 
     if not rows:
@@ -1271,6 +1325,7 @@ def refactor(
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without writing"),
 ) -> None:
     """Refactor a codebase according to the specified goal."""
+    console = get_console()
     print_banner()
     
     # Resolve and validate path
@@ -1333,6 +1388,7 @@ def refactors(
     path: str = typer.Option(None, "--path", help="Filter by directory path"),
 ) -> None:
     """List past refactor sessions."""
+    console = get_console()
     print_banner()
     
     rows = list_refactors(path)
@@ -1367,6 +1423,7 @@ def refactors(
 @app.command()
 def gen_tests(session_id: str) -> None:
     """Generate tests for a completed build."""
+    console = get_console()
     print_banner()
     
     try:
@@ -1411,6 +1468,7 @@ def test_generations(
     session: str = typer.Option(None, "--session", help="Filter by session ID"),
 ) -> None:
     """List test generation sessions."""
+    console = get_console()
     print_banner()
     
     rows = list_test_generations(session)
@@ -1449,6 +1507,7 @@ def rebuild(
                                      help="Rebuild only changed files and dependents"),
 ) -> None:
     """Rebuild a project, focusing on changed files and their dependents."""
+    console = get_console()
     print_banner()
     
     # Load session from DB
@@ -1520,6 +1579,7 @@ def rebuild_history(
     session_id: str = typer.Argument(..., help="Session ID"),
 ) -> None:
     """Show rebuild history for a session."""
+    console = get_console()
     print_banner()
     
     logs = get_rebuild_logs(session_id)
@@ -1527,12 +1587,6 @@ def rebuild_history(
     if not logs:
         console.print(f"No rebuild history for session: {session_id}")
         return
-    
-    console.print(Panel(
-        "",
-        title=f"Rebuild History — {session_id}",
-        border_style="dim"
-    ))
     
     table = Table()
     table.add_column("Rebuilt At", style="dim")
@@ -1561,6 +1615,7 @@ def main(
     version: bool = typer.Option(False, "--version", "-v", help="Show Rica version")
 ) -> None:
     """Rica - Language-Agnostic Autonomous Coding Agent."""
+    console = get_console()
     if version or ctx.invoked_subcommand is None:
         console.print("Rica v0.1.0 — Language-Agnostic Coding Agent")
         raise typer.Exit()
@@ -1576,6 +1631,7 @@ def tag(
     tag: str = typer.Argument(..., help="Tag to add")
 ) -> None:
     """Add a tag to a session."""
+    console = get_console()
     print_banner()
     
     # Validate session exists
@@ -1605,6 +1661,7 @@ def untag(
     tag: str = typer.Argument(..., help="Tag to remove")
 ) -> None:
     """Remove a tag from a session."""
+    console = get_console()
     print_banner()
     
     # Validate session exists
@@ -1633,6 +1690,7 @@ def tags(
     session: Optional[str] = typer.Option(None, "--session", help="Show tags for specific session")
 ) -> None:
     """Show tags."""
+    console = get_console()
     print_banner()
     
     if session:
@@ -1667,9 +1725,10 @@ def tags(
 
 @app.command()
 def search(
-    query: str = typer.Argument(..., help="Search query")
+    query: str = typer.Argument(..., help="Search query (matches goal, language, status, and tags)"),
 ) -> None:
-    """Search sessions by goal text."""
+    """Search sessions by goal text, language, status, and tags."""
+    console = get_console()
     print_banner()
     
     results = search_sessions(query)
@@ -1677,10 +1736,6 @@ def search(
     if not results:
         console.print(f"No sessions matched '{query}'.")
         return
-    
-    # Add tags to each result
-    for result in results:
-        result["tags"] = get_tags(result["id"])
     
     # Display results table
     table = Table(title=f"Search Results — \"{query}\"")
@@ -1693,13 +1748,14 @@ def search(
     
     for session in results:
         goal = session["goal"][:60] + "..." if len(session["goal"]) > 60 else session["goal"]
-        tags_text = ", ".join(session["tags"]) if session["tags"] else ""
+        tags = session.get("tags", [])
+        tags_text = ", ".join(tags) if tags else ""
         created = session["created_at"][:19].replace("T", " ")
         
         table.add_row(
             session["id"],
             goal,
-            session["language"],
+            _langs(session),
             session["status"],
             tags_text,
             created
@@ -1713,6 +1769,7 @@ def sessions(
     tag: Optional[str] = typer.Option(None, "--tag", help="Filter by tag")
 ) -> None:
     """List sessions."""
+    console = get_console()
     print_banner()
     
     if tag:
@@ -1751,7 +1808,7 @@ def sessions(
         table.add_row(
             session["id"],
             goal,
-            session["language"],
+            _langs(session),
             session["status"],
             tags_text,
             created

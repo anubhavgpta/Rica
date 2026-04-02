@@ -104,7 +104,7 @@ def watch_path(
         
         # Save initial review
         import uuid
-        from datetime import datetime
+        from datetime import datetime, timezone
         review_id = uuid.uuid4().hex[:8]
         error_count = sum(1 for i in initial_report.issues if i.severity == "error")
         save_review(
@@ -115,7 +115,7 @@ def watch_path(
             issue_count=len(initial_report.issues),
             error_count=error_count,
             report_json=initial_report.model_dump_json(),
-            reviewed_at=datetime.utcnow().isoformat() + "Z",
+            reviewed_at=datetime.now(timezone.utc).isoformat() + "Z",
         )
         console.print(f"[dim]Review saved. ID: {review_id}[/dim]")
         
@@ -167,7 +167,7 @@ def watch_path(
                     
                     # Save re-review
                     import uuid
-                    from datetime import datetime
+                    from datetime import datetime, timezone
                     review_id = uuid.uuid4().hex[:8]
                     error_count = sum(1 for i in current_report.issues if i.severity == "error")
                     save_review(
@@ -178,7 +178,7 @@ def watch_path(
                         issue_count=len(current_report.issues),
                         error_count=error_count,
                         report_json=current_report.model_dump_json(),
-                        reviewed_at=datetime.utcnow().isoformat() + "Z",
+                        reviewed_at=datetime.now(timezone.utc).isoformat() + "Z",
                     )
                     
                     prior_report = current_report

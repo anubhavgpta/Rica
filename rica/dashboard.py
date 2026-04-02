@@ -19,6 +19,40 @@ from rich.text import Text
 from . import db
 
 
+def _langs(session) -> str:
+    """Helper to handle both single languages and language lists."""
+    # Try to get languages from plan_json first
+    try:
+        plan_data = db.db.get_plan_for_session(session["id"])
+        if plan_data:
+            import json
+            plan = json.loads(plan_data["plan_json"])
+            if "languages" in plan and plan["languages"]:
+                result = " / ".join(plan["languages"])
+                return result
+    except Exception as e:
+        pass
+    
+    # Fall back to the language field
+    language_field = session["language"]
+    
+    if isinstance(language_field, list):
+        return " / ".join(language_field)
+    elif isinstance(language_field, str):
+        # Check if it looks like a JSON-encoded list
+        if language_field.startswith('[') and language_field.endswith(']'):
+            try:
+                import json
+                lang_list = json.loads(language_field)
+                if isinstance(lang_list, list):
+                    return " / ".join(lang_list)
+            except:
+                pass
+        return language_field
+    else:
+        return str(language_field)
+
+
 def is_session_id(text: str) -> bool:
     """Returns True if text looks like a Rica session ID — alphanumeric, 6–12 characters, no spaces."""
     return bool(re.match(r'^[a-zA-Z0-9]{6,12}$', text))
@@ -96,7 +130,7 @@ def build_session_table(limit: int = 5) -> Table:
         table.add_row(
             session_id,  # Full ID
             goal,
-            language,
+            _langs(session),
             status_style,
             build_style,
             debug_style,
@@ -132,7 +166,7 @@ def build_detail_panel(session_id: str) -> Panel:
     
     # Goal and basic info
     content_lines.append(f"[bold]Goal:[/bold] {session['goal']}")
-    content_lines.append(f"[bold]Language:[/bold] {session['language']}")
+    content_lines.append(f"[bold]Language:[/bold] {_langs(session)}")
     content_lines.append(f"[bold]Status:[/bold] {session['status']}")
     content_lines.append("")
     

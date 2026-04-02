@@ -1,7 +1,7 @@
 """Rica API - Clean, Rich-free programmatic interface for ALARA integration."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List
 
@@ -123,9 +123,9 @@ def build(session_id: str, workspace: Path | None = None) -> tuple[Path, List[Ge
     
     # Save build record
     build_id = str(uuid.uuid4())
-    started_at = datetime.utcnow().isoformat() + "Z"
+    started_at = datetime.now(timezone.utc).isoformat() + "Z"
     db.db.insert_build(build_id, session_id, str(workspace), started_at)
-    completed_at = datetime.utcnow().isoformat() + "Z"
+    completed_at = datetime.now(timezone.utc).isoformat() + "Z"
     db.db.complete_build(build_id, completed_at)
     
     return workspace, generated_files
@@ -224,7 +224,7 @@ def debug(session_id: str, max_iterations: int = 5, timeout: int = 30) -> dict:
         Debug result dict with session info
     """
     debug_session_id = str(uuid.uuid4())
-    started_at = datetime.utcnow().isoformat() + "Z"
+    started_at = datetime.now(timezone.utc).isoformat() + "Z"
     db.db.insert_debug_session(debug_session_id, session_id, started_at)
     
     # Simple debug loop implementation
@@ -257,7 +257,7 @@ def debug(session_id: str, max_iterations: int = 5, timeout: int = 30) -> dict:
                 str(error_class.implicated_files),
                 0,  # check_passed
                 check_result.exit_code,
-                datetime.utcnow().isoformat() + "Z"
+                datetime.now(timezone.utc).isoformat() + "Z"
             )
             
             # In a real implementation, we would apply the fix here
@@ -266,7 +266,7 @@ def debug(session_id: str, max_iterations: int = 5, timeout: int = 30) -> dict:
     except Exception:
         final_status = "failed"
     
-    completed_at = datetime.utcnow().isoformat() + "Z"
+    completed_at = datetime.now(timezone.utc).isoformat() + "Z"
     db.db.complete_debug_session(debug_session_id, final_status, completed_at)
     
     return {

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.console import Console
@@ -158,5 +158,5 @@ def explain_codebase(path: Path, language: str, console: Console) -> ExplainRepo
         language=language,
         files_analyzed=len(file_contents),
         explanation=explanation,
-        explained_at=datetime.utcnow().isoformat() + "Z"
+        explained_at=datetime.now(timezone.utc).isoformat() + "Z"
     )
