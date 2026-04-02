@@ -194,6 +194,22 @@ class Database:
                 )
             """)
             
+            # Create notes table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS notes (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id  TEXT NOT NULL,
+                    content     TEXT NOT NULL,
+                    created_at  TEXT NOT NULL,
+                    updated_at  TEXT NOT NULL
+                )
+            """)
+            
+            # Create index for notes
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_notes_session ON notes(session_id)
+            """)
+            
             conn.commit()
     
     def create_session(self, session_id: str, goal: str, language: str) -> None:
@@ -835,3 +851,59 @@ def save_session(goal: str, language: str) -> str:
             (session_id, goal, language, datetime.now(timezone.utc).isoformat() + "Z")
         )
     return session_id
+
+
+def add_note(session_id: str, content: str) -> int:
+    """Insert a new note row and return the new row id."""
+    conn = get_connection()
+    with conn:
+        cursor = conn.execute(
+            "INSERT INTO notes (session_id, content, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            (session_id, content, datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat())
+        )
+        return cursor.lastrowid
+
+
+def get_notes(session_id: str) -> list[dict]:
+    """Return all notes for the session ordered by created_at ASC."""
+    conn = get_connection()
+    cursor = conn.execute(
+        "SELECT id, session_id, content, created_at, updated_at FROM notes WHERE session_id = ? ORDER BY created_at ASC",
+        (session_id,)
+    )
+    rows = cursor.fetchall()
+    columns = [desc[0] for desc in cursor.description]
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def update_note(note_id: int, content: str) -> bool:
+    """Update content and updated_at for the given note id."""
+    conn = get_connection()
+    with conn:
+        cursor = conn.execute(
+            "UPDATE notes SET content = ?, updated_at = ? WHERE id = ?",
+            (content, datetime.now(timezone.utc).isoformat(), note_id)
+        )
+        return cursor.rowcount > 0
+
+
+def delete_note(note_id: int) -> bool:
+    """Delete the note with the given id."""
+    conn = get_connection()
+    with conn:
+        cursor = conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+        return cursor.rowcount > 0
+
+
+def get_note(note_id: int) -> dict | None:
+    """Return the single note dict or None if not found."""
+    conn = get_connection()
+    cursor = conn.execute(
+        "SELECT id, session_id, content, created_at, updated_at FROM notes WHERE id = ?",
+        (note_id,)
+    )
+    result = cursor.fetchone()
+    if result:
+        columns = [desc[0] for desc in cursor.description]
+        return dict(zip(columns, result))
+    return None

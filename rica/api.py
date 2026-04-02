@@ -613,3 +613,78 @@ def search_sessions(query: str) -> List[dict]:
         result["tags"] = db.get_tags(result["id"])
     
     return results
+
+
+# Notes API
+
+def add_note(session_id: str, content: str) -> dict:
+    """Add a note to a session.
+    
+    Args:
+        session_id: Session ID
+        content: Note content
+        
+    Returns:
+        Dict with note_id and session_id
+        
+    Raises:
+        ValueError: If session does not exist
+    """
+    # Validate session exists
+    session = get_session(session_id)
+    if not session:
+        raise ValueError(f"Session {session_id} does not exist")
+    
+    note_id = db.add_note(session_id, content)
+    return {"note_id": note_id, "session_id": session_id}
+
+
+def get_notes(session_id: str) -> list[dict]:
+    """Get all notes for a session.
+    
+    Args:
+        session_id: Session ID
+        
+    Returns:
+        List of note dicts ordered by created_at ASC
+    """
+    return db.get_notes(session_id)
+
+
+def update_note(note_id: int, content: str) -> dict:
+    """Update a note's content.
+    
+    Args:
+        note_id: Note ID
+        content: New content
+        
+    Returns:
+        Dict with note_id and updated flag
+        
+    Raises:
+        ValueError: If note not found
+    """
+    success = db.update_note(note_id, content)
+    if not success:
+        raise ValueError(f"Note {note_id} not found")
+    
+    return {"note_id": note_id, "updated": True}
+
+
+def delete_note(note_id: int) -> dict:
+    """Delete a note.
+    
+    Args:
+        note_id: Note ID
+        
+    Returns:
+        Dict with note_id and deleted flag
+        
+    Raises:
+        ValueError: If note not found
+    """
+    success = db.delete_note(note_id)
+    if not success:
+        raise ValueError(f"Note {note_id} not found")
+    
+    return {"note_id": note_id, "deleted": True}

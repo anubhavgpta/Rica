@@ -69,7 +69,7 @@ def export_session(session_id: str, out_path: Path) -> dict:
     # 2. Collect data from DB tables
     tables_to_export = [
         "executions", "debug_history", "reviews", "refactors",
-        "test_generations", "explanations", "tags"
+        "test_generations", "explanations", "tags", "notes"
     ]
     
     table_data = {}

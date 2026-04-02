@@ -50,7 +50,7 @@ def _langs(session) -> str:
     else:
         return str(language_field)
 from .codegen import build_project
-from .db import db, save_explanation, list_explanations, save_refactor, list_refactors, list_test_generations, get_rebuild_logs, add_tag, remove_tag, get_tags, get_sessions_by_tag, search_sessions, get_all_tags, get_sessions
+from .db import db, save_explanation, list_explanations, save_refactor, list_refactors, list_test_generations, get_rebuild_logs, add_tag, remove_tag, get_tags, get_sessions_by_tag, search_sessions, get_all_tags, get_sessions, add_note, get_notes, update_note, delete_note, get_note
 from .debugger import classify_error, generate_fix
 from .executor import detect_server, run_command
 from .explainer import explain_codebase
@@ -2011,3 +2011,115 @@ def hook_run(
     # Exit with appropriate code
     if result["status"] not in ["ok", "no_hook"]:
         raise typer.Exit(1)
+
+
+@app.command()
+def note(
+    session_id: str = typer.Argument(..., help="Session ID"),
+    content: str = typer.Argument(..., help="Note content")
+) -> None:
+    """Add a note to a session."""
+    console = get_console()
+    print_banner()
+    
+    # Validate session exists
+    sessions = db.list_sessions()
+    session = next((s for s in sessions if s["id"] == session_id), None)
+    if not session:
+        console.print(f"[red]Session not found: {session_id}[/red]")
+        raise typer.Exit(1)
+    
+    # Add note
+    note_id = add_note(session_id, content)
+    
+    console.print(Panel(
+        f"Note added (id: {note_id}) to session {session_id}",
+        title="Note Added",
+        border_style="dim"
+    ))
+
+
+@app.command()
+def notes(
+    session_id: str = typer.Argument(..., help="Session ID")
+) -> None:
+    """List all notes for a session."""
+    console = get_console()
+    print_banner()
+    
+    # Validate session exists
+    sessions = db.list_sessions()
+    session = next((s for s in sessions if s["id"] == session_id), None)
+    if not session:
+        console.print(f"[red]Session not found: {session_id}[/red]")
+        raise typer.Exit(1)
+    
+    # Get notes
+    notes_list = get_notes(session_id)
+    
+    if not notes_list:
+        console.print(Panel(
+            f"No notes for session {session_id}",
+            border_style="dim"
+        ))
+        return
+    
+    # Create table
+    table = Table(title=f"Session Notes — {session_id}", border_style="dim")
+    table.add_column("ID", style="cyan")
+    table.add_column("Created", style="white")
+    table.add_column("Note", style="green")
+    
+    for note in notes_list:
+        table.add_row(
+            str(note["id"]),
+            note["created_at"],
+            note["content"]
+        )
+    
+    console.print(table)
+
+
+@app.command("note-edit")
+def note_edit(
+    note_id: int = typer.Argument(..., help="Note ID"),
+    new_content: str = typer.Argument(..., help="New note content")
+) -> None:
+    """Edit an existing note."""
+    console = get_console()
+    print_banner()
+    
+    # Update note
+    success = update_note(note_id, new_content)
+    
+    if not success:
+        console.print(f"[red]Note {note_id} not found[/red]")
+        raise typer.Exit(1)
+    
+    console.print(Panel(
+        f"Note {note_id} updated",
+        title="Note Updated",
+        border_style="dim"
+    ))
+
+
+@app.command("note-delete")
+def note_delete(
+    note_id: int = typer.Argument(..., help="Note ID")
+) -> None:
+    """Delete a note."""
+    console = get_console()
+    print_banner()
+    
+    # Delete note
+    success = delete_note(note_id)
+    
+    if not success:
+        console.print(f"[red]Note {note_id} not found[/red]")
+        raise typer.Exit(1)
+    
+    console.print(Panel(
+        f"Note {note_id} deleted",
+        title="Note Deleted",
+        border_style="dim"
+    ))

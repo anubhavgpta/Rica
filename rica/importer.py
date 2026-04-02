@@ -98,7 +98,7 @@ def import_session(archive_path: Path, extra_tag: str | None = None) -> dict:
             # 9. Restore history tables
             tables_to_restore = [
                 "executions", "debug_history", "reviews", "refactors",
-                "test_generations", "explanations", "tags"
+                "test_generations", "explanations", "tags", "notes"
             ]
             
             conn = get_connection()
@@ -118,17 +118,22 @@ def import_session(archive_path: Path, extra_tag: str | None = None) -> dict:
                                 if table_name != "tags":
                                     row["session_id"] = new_session_id
                                 
-                                # Build INSERT dynamically
-                                cols = ", ".join(row.keys())
-                                placeholders = ", ".join(["?"] * len(row))
-                                sql = f"INSERT OR IGNORE INTO {table_name} ({cols}) VALUES ({placeholders})"
-                                
-                                try:
-                                    conn.execute(sql, list(row.values()))
-                                except sqlite3.OperationalError as e:
-                                    # Table might not exist or column mismatch
-                                    console.print(f"[dim]Warning: Could not restore {table_name}: {e}[/dim]")
-                                    continue
+                                # Special handling for notes: use add_note to generate fresh ids/timestamps
+                                if table_name == "notes":
+                                    from .db import add_note
+                                    add_note(new_session_id, row["content"])
+                                else:
+                                    # Build INSERT dynamically
+                                    cols = ", ".join(row.keys())
+                                    placeholders = ", ".join(["?"] * len(row))
+                                    sql = f"INSERT OR IGNORE INTO {table_name} ({cols}) VALUES ({placeholders})"
+                                    
+                                    try:
+                                        conn.execute(sql, list(row.values()))
+                                    except sqlite3.OperationalError as e:
+                                        # Table might not exist or column mismatch
+                                        console.print(f"[dim]Warning: Could not restore {table_name}: {e}[/dim]")
+                                        continue
                         
                         except (json.JSONDecodeError, UnicodeDecodeError) as e:
                             console.print(f"[dim]Warning: Could not parse {filename}: {e}[/dim]")
