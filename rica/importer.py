@@ -10,6 +10,7 @@ from typing import Optional
 
 from .console import get_console
 from .db import get_connection, add_tag
+from .hooks import fire_hook
 
 
 def import_session(archive_path: Path, extra_tag: str | None = None) -> dict:
@@ -149,6 +150,11 @@ def import_session(archive_path: Path, extra_tag: str | None = None) -> dict:
                         tags_applied.append(normalized_tag)
                 except Exception as e:
                     console.print(f"[dim]Warning: Could not add tag '{normalized_tag}': {e}[/dim]")
+            
+            # Fire post_import hook
+            post_hook_result = fire_hook("post_import", session_id=new_session_id, extra={"source_file": str(archive_path)})
+            if post_hook_result.get("status") in ["error", "timeout"]:
+                console.print(f"[dim]Hook warning (post_import): {post_hook_result.get('stderr') or post_hook_result.get('status')}[/dim]")
             
             return {
                 "new_session_id": new_session_id,

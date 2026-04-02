@@ -67,6 +67,7 @@ from . import rebuilder, snapshotter, dep_graph
 from .models import FileSnapshot, RebuildReport
 from .exporter import export_session
 from .importer import import_session
+from .hooks import fire_hook, discover_hooks
 
 app = typer.Typer(help="Rica - Language-Agnostic Autonomous Coding Agent")
 
@@ -210,6 +211,11 @@ def plan(
     session_id = str(uuid.uuid4())[:8]
     
     try:
+        # Fire pre_plan hook
+        pre_hook_result = fire_hook("pre_plan", session_id=session_id)
+        if pre_hook_result.get("status") in ["error", "timeout"]:
+            console.print(f"[dim]Hook warning (pre_plan): {pre_hook_result.get('stderr') or pre_hook_result.get('status')}[/dim]")
+        
         # Create plan with language override
         plan_obj = create_plan(goal, session_id, lang_override=lang)
         
@@ -224,12 +230,22 @@ def plan(
             console.print("[green]Plan auto-approved (--yes)[/green]")
             db.update_plan_approval(session_id, True)
             console.print(f"[green]Saved:[/green] {PLANS_DIR / f'{session_id}.json'}")
+            
+            # Fire post_plan hook
+            post_hook_result = fire_hook("post_plan", session_id=session_id)
+            if post_hook_result.get("status") in ["error", "timeout"]:
+                console.print(f"[dim]Hook warning (post_plan): {post_hook_result.get('stderr') or post_hook_result.get('status')}[/dim]")
         else:
             response = typer.confirm("Proceed with this plan?", default=False)
             if response:
                 console.print("[green]Plan approved[/green]")
                 db.update_plan_approval(session_id, True)
                 console.print(f"[green]Saved:[/green] {PLANS_DIR / f'{session_id}.json'}")
+                
+                # Fire post_plan hook
+                post_hook_result = fire_hook("post_plan", session_id=session_id)
+                if post_hook_result.get("status") in ["error", "timeout"]:
+                    console.print(f"[dim]Hook warning (post_plan): {post_hook_result.get('stderr') or post_hook_result.get('status')}[/dim]")
             else:
                 console.print("[dim]Plan discarded[/dim]")
                 return
@@ -346,6 +362,11 @@ def build(
     ))
     
     try:
+        # Fire pre_build hook
+        pre_hook_result = fire_hook("pre_build", session_id=session_id)
+        if pre_hook_result.get("status") in ["error", "timeout"]:
+            console.print(f"[dim]Hook warning (pre_build): {pre_hook_result.get('stderr') or pre_hook_result.get('status')}[/dim]")
+        
         # Build the project
         generated_files = build_project(plan, workspace_path, console)
         
@@ -379,6 +400,11 @@ def build(
         db.complete_build(build_id, completed_at)
         
         console.print(f"[green]Build complete. Workspace: {workspace_path}[/green]")
+        
+        # Fire post_build hook
+        post_hook_result = fire_hook("post_build", session_id=session_id, extra={"files_written": len(generated_files)})
+        if post_hook_result.get("status") in ["error", "timeout"]:
+            console.print(f"[dim]Hook warning (post_build): {post_hook_result.get('stderr') or post_hook_result.get('status')}[/dim]")
         
         # Take initial snapshot for rebuild functionality
         snapshotter.take_snapshot(session_id, workspace_path)
@@ -764,6 +790,11 @@ def debug(
     for iteration in range(start_iteration, max_iter):
         console.print(f"[dim]--- Iteration {iteration + 1} / {max_iter} ---[/dim]")
         
+        # Fire pre_debug hook
+        pre_hook_result = fire_hook("pre_debug", session_id=session_id, extra={"iteration": iteration})
+        if pre_hook_result.get("status") in ["error", "timeout"]:
+            console.print(f"[dim]Hook warning (pre_debug): {pre_hook_result.get('stderr') or pre_hook_result.get('status')}[/dim]")
+        
         # Run check
         check_result = run_command(initial_check_cmd, workspace, timeout=timeout, console=console)
         
@@ -833,6 +864,11 @@ def debug(
         
         # Check if successful
         if run_result.exit_code == 0:
+            # Fire post_debug hook for successful iteration
+            post_hook_result = fire_hook("post_debug", session_id=session_id, extra={"iteration": iteration, "status": "fixed"})
+            if post_hook_result.get("status") in ["error", "timeout"]:
+                console.print(f"[dim]Hook warning (post_debug): {post_hook_result.get('stderr') or post_hook_result.get('status')}[/dim]")
+            
             completed_at = datetime.now(timezone.utc).isoformat() + "Z"
             db.complete_debug_session(debug_session_id, "success", completed_at)
             
@@ -845,6 +881,11 @@ def debug(
     
     # If loop exhausted
     else:
+        # Fire post_debug hook for max iterations reached
+        post_hook_result = fire_hook("post_debug", session_id=session_id, extra={"iteration": max_iter - 1, "status": "failed"})
+        if post_hook_result.get("status") in ["error", "timeout"]:
+            console.print(f"[dim]Hook warning (post_debug): {post_hook_result.get('stderr') or post_hook_result.get('status')}[/dim]")
+        
         completed_at = datetime.now(timezone.utc).isoformat() + "Z"
         db.complete_debug_session(debug_session_id, "max_iterations_reached", completed_at)
         console.print(f"[yellow]Max iterations reached ({max_iter}). Review errors manually.[/yellow]")
@@ -1891,3 +1932,82 @@ def import_cmd(
         title="Imported Session",
         border_style="dim",
     ))
+
+
+@app.command()
+def hooks() -> None:
+    """List registered hook scripts."""
+    from .hooks import HOOKS_DIR, VALID_EVENTS
+    console = get_console()
+    print_banner()
+    
+    # Discover hooks
+    discovered = discover_hooks()
+    
+    if not discovered:
+        console.print(Panel(
+            "No hooks registered. Place <event>.py files in ~/.rica/hooks/",
+            border_style="dim"
+        ))
+        return
+    
+    # Create table
+    table = Table(title="Registered Hooks", border_style="dim")
+    table.add_column("Event", style="cyan")
+    table.add_column("Script", style="white") 
+    table.add_column("Status", style="green")
+    
+    # List all valid events
+    for event in VALID_EVENTS:
+        if event in discovered:
+            script_path = discovered[event]
+            table.add_row(event, str(script_path.name), "registered")
+        else:
+            table.add_row(event, "-", "-")
+    
+    console.print(table)
+
+
+@app.command("hook-run")
+def hook_run(
+    event: str = typer.Argument(..., help="Hook event to run"),
+    session: Optional[str] = typer.Option(None, "--session", help="Session ID (optional)")
+) -> None:
+    """Manually run a hook script."""
+    from .hooks import VALID_EVENTS
+    console = get_console()
+    print_banner()
+    
+    # Validate event
+    if event not in VALID_EVENTS:
+        console.print(f"[red]Invalid event: {event}[/red]")
+        console.print(f"[dim]Valid events: {', '.join(VALID_EVENTS)}[/dim]")
+        raise typer.Exit(1)
+    
+    # Fire hook
+    result = fire_hook(event, session_id=session, extra={"manual": True})
+    
+    # Build result content
+    lines = [
+        f"Event      : {result['event']}",
+        f"Status     : {result['status']}",
+        f"Return Code: {result['returncode'] or 'N/A'}",
+    ]
+    
+    if result.get("stdout"):
+        lines.append(f"Stdout     : {result['stdout']}")
+    
+    if result.get("stderr"):
+        lines.append(f"Stderr     : {result['stderr']}")
+    
+    # Display result
+    from rich.panel import Panel
+    console.print(Panel(
+        "\n".join(lines),
+        title="Hook Result",
+        border_style="dim"
+    ))
+    
+    # Exit with appropriate code
+    if result["status"] not in ["ok", "no_hook"]:
+        raise typer.Exit(1)

@@ -9,6 +9,7 @@ from typing import Optional
 
 from .console import get_console
 from .db import get_connection
+from .hooks import fire_hook
 
 
 def _get_table_rows(session_id: str, table_name: str) -> list[dict]:
@@ -42,6 +43,11 @@ def export_session(session_id: str, out_path: Path) -> dict:
     Raises ValueError if session not found in DB.
     """
     console = get_console()
+    
+    # Fire pre_export hook
+    pre_hook_result = fire_hook("pre_export", session_id=session_id, extra={"out_path": str(out_path)})
+    if pre_hook_result.get("status") in ["error", "timeout"]:
+        console.print(f"[dim]Hook warning (pre_export): {pre_hook_result.get('stderr') or pre_hook_result.get('status')}[/dim]")
     
     # 1. Look up session from DB
     conn = get_connection()
@@ -126,6 +132,11 @@ def export_session(session_id: str, out_path: Path) -> dict:
     
     # 8. Return summary
     archive_size_bytes = out_path.stat().st_size
+    
+    # Fire post_export hook
+    post_hook_result = fire_hook("post_export", session_id=session_id, extra={"out_path": str(out_path), "size_bytes": archive_size_bytes})
+    if post_hook_result.get("status") in ["error", "timeout"]:
+        console.print(f"[dim]Hook warning (post_export): {post_hook_result.get('stderr') or post_hook_result.get('status')}[/dim]")
     
     return {
         "plan_included": plan_included,
