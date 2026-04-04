@@ -189,6 +189,7 @@ class SubTaskResult(BaseModel):
     summary: str          # one-line human-readable outcome
     detail: dict          # raw return value from the called layer
     attempt: int          # 1 = first try, 2 = retry
+    previous_attempt_detail: dict | None = None  # populated on retry
 
 
 class AgentTurnResult(BaseModel):

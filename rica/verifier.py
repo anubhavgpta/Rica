@@ -5,6 +5,24 @@ from typing import Union
 from .models import SubTask, SubTaskResult
 
 
+UNRETRYABLE_PATTERNS = [
+    'execvpe',
+    'No such file or directory',
+    '/bin/bash',
+    '/bin/sh',
+    'not recognized as an internal or external command',  # Windows cmd errors
+    'Failed to start process',
+    'The directory name is invalid',
+    'unsupported operand type',  # Path operation errors
+]
+
+
+def is_unretryable(result: SubTaskResult) -> bool:
+    """Check if a result contains an unretryable environment error."""
+    error_text = result.detail.get('error', '') + result.detail.get('output', '')
+    return any(pat in error_text for pat in UNRETRYABLE_PATTERNS)
+
+
 class VerificationResult:
     """Result of verifying a subtask execution."""
     
@@ -82,12 +100,22 @@ class Verifier:
         exit_code = detail.get("exit_code")
         timed_out = detail.get("timed_out", False)
         
-        if exit_code == 0 and not timed_out:
+        passed = (
+            exit_code == 0
+            and not timed_out
+        )
+        
+        if passed:
             return VerificationResult(True, "Command executed successfully")
         elif timed_out:
-            return VerificationResult(False, "Command timed out")
-        elif exit_code is not None:
-            return VerificationResult(False, f"Command failed with exit code {exit_code}")
+            return VerificationResult(False, f"Command timed out")
+        elif exit_code is None:
+            # subprocess creation error
+            reason = f"Failed to start process: {detail.get('error', '')[:120]}"
+            return VerificationResult(False, reason)
+        elif exit_code != 0:
+            reason = f"exit_code {detail.get('exit_code')}: {detail.get('error', '')[:120]}"
+            return VerificationResult(False, reason)
         else:
             return VerificationResult(False, "Command execution status unknown")
     

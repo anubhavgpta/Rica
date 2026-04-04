@@ -21,7 +21,7 @@ from .models import (
     WatchEvent,
 )
 from .task_decomposer import TaskDecomposer
-from .verifier import Verifier, VerificationResult
+from .verifier import Verifier, VerificationResult, is_unretryable
 
 
 class AgentOrchestrator:
@@ -70,9 +70,30 @@ class AgentOrchestrator:
                 fire_hook("post_agent_task", session_id=self.session_id, extra={"subtask": task.model_dump(), "result": result_1.model_dump()})
                 continue
             
+            # Check for unretryable environment errors
+            if is_unretryable(result_1):
+                error_text = result_1.detail.get('error', '') + result_1.detail.get('output', '')
+                escalation_msg = f"Stuck on execute: environment error — {error_text[:200]}. This may require manual setup (e.g. installing a runtime or configuring WSL)."
+                fire_hook("agent_stuck", session_id=self.session_id, extra={"subtask": task.model_dump(), "results": [result_1.model_dump()]})
+                
+                # Add failed result and escalate
+                results.append(result_1)
+                return AgentTurnResult(
+                    session_id=self.session_id,
+                    turn_index=self.turn_index,
+                    user_prompt=user_prompt,
+                    subtasks=subtasks,
+                    results=results,
+                    final_status="stuck",
+                    agent_reply=escalation_msg
+                )
+            
             # Retry with modified approach
             modified_task = self.task_decomposer.modify_subtask(task, result_1.detail)
             result_2 = self._execute_subtask(modified_task, attempt=2)
+            
+            # Preserve previous attempt detail
+            result_2.previous_attempt_detail = result_1.detail
             
             if self.verifier.verify(modified_task, result_2).passed:
                 results.append(result_2)
