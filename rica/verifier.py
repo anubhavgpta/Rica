@@ -10,7 +10,11 @@ UNRETRYABLE_PATTERNS = [
     'No such file or directory',
     '/bin/bash',
     '/bin/sh',
-    'not recognized as an internal or external command',  # Windows cmd errors
+    'not recognized as an internal or external command',
+    'WinError 267',         # invalid directory
+    'WinError 2',           # file not found (Windows)
+    'WinError 193',         # not a valid Win32 application
+    'cannot find the path', # Windows path errors
     'Failed to start process',
     'The directory name is invalid',
     'unsupported operand type',  # Path operation errors

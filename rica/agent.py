@@ -65,7 +65,11 @@ class AgentOrchestrator:
             # Execute subtask with retry logic
             result_1 = self._execute_subtask(task, attempt=1)
             
-            if self.verifier.verify(task, result_1).passed:
+            # Apply verifier result to SubTaskResult
+            verification_1 = self.verifier.verify(task, result_1)
+            result_1.passed = verification_1.passed
+            
+            if verification_1.passed:
                 results.append(result_1)
                 fire_hook("post_agent_task", session_id=self.session_id, extra={"subtask": task.model_dump(), "result": result_1.model_dump()})
                 continue
@@ -79,7 +83,7 @@ class AgentOrchestrator:
                 # Add failed result and escalate
                 results.append(result_1)
                 return AgentTurnResult(
-                    session_id=self.session_id,
+                    session_id=self.session_id or "unknown",
                     turn_index=self.turn_index,
                     user_prompt=user_prompt,
                     subtasks=subtasks,
@@ -95,7 +99,11 @@ class AgentOrchestrator:
             # Preserve previous attempt detail
             result_2.previous_attempt_detail = result_1.detail
             
-            if self.verifier.verify(modified_task, result_2).passed:
+            # Apply verifier result to SubTaskResult
+            verification_2 = self.verifier.verify(modified_task, result_2)
+            result_2.passed = verification_2.passed
+            
+            if verification_2.passed:
                 results.append(result_2)
                 fire_hook("post_agent_task", session_id=self.session_id, extra={"subtask": modified_task.model_dump(), "result": result_2.model_dump()})
                 continue
@@ -184,7 +192,7 @@ class AgentOrchestrator:
                 task_type=task.type,
                 passed=False,
                 summary=f"Exception: {str(e)}",
-                detail={"error": str(e), "exception_type": type(e).__name__},
+                detail={"exit_code": -1, "error": str(e), "exception_type": type(e).__name__},
                 attempt=attempt
             )
     

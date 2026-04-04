@@ -99,7 +99,7 @@ def run_command(
         # Handle subprocess creation errors
         return ExecutionResult(
             command=cmd,
-            exit_code=None,
+            exit_code=-1,       # sentinel: process never started
             stdout="",
             stderr=f"Failed to start process: {e}",
             timed_out=False,
