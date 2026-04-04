@@ -1,19 +1,23 @@
 """Rica L18 Autonomous Agent Core Orchestrator."""
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 from rich.console import Console
 
 from .agent_memory import get_turn_count, load_history, save_turn
 from .agent_watch_bridge import WatchBridge
 from .codegen import _strip_fences
 from .config import WORKSPACE_ROOT
+from .dag import build_execution_waves
 from .db import get_latest_build, get_latest_debug, get_plan_for_session
 from .hooks import fire_hook
 from .models import (
+    AgentParallelConfig,
     AgentTurnResult,
     ProjectContext,
     SubTask,
@@ -27,13 +31,17 @@ from .verifier import Verifier, VerificationResult, is_unretryable
 class AgentOrchestrator:
     """Central agent class for autonomous task execution."""
     
-    def __init__(self, session_id: Optional[str], console: Console):
+    def __init__(self, session_id: str, parallel_config: AgentParallelConfig | None = None, console: Console | None = None):
         self.session_id = session_id
-        self.console = console
+        self.console = console or Console()
+        self.parallel_config = parallel_config or AgentParallelConfig()
         self.turn_index = 0
         
+        # DB write lock for thread safety
+        self._db_lock = threading.Lock()
+        
         # Initialize components
-        self.task_decomposer = TaskDecomposer(console)
+        self.task_decomposer = TaskDecomposer(self.console)
         self.verifier = Verifier()
         self.watch_bridge = WatchBridge()
         
@@ -41,7 +49,7 @@ class AgentOrchestrator:
         if session_id:
             self.turn_index = get_turn_count(session_id)
     
-    def run_turn(self, user_prompt: str) -> AgentTurnResult:
+    def run_turn(self, user_prompt: str, last_n_history: int = 10) -> AgentTurnResult:
         """Execute one agent turn. Synchronous and blocking."""
         # Store user prompt for subtask use
         self._last_user_prompt = user_prompt
@@ -52,100 +60,149 @@ class AgentOrchestrator:
         context = self._build_project_context()
         
         # Decompose user prompt into subtasks
-        subtasks = self.task_decomposer.decompose(user_prompt, context)
+        self.subtasks = self.task_decomposer.decompose(user_prompt, context)
         
-        # Execute subtasks
-        results = []
-        final_status = "completed"
+        # Build execution waves
+        try:
+            waves = build_execution_waves(self.subtasks)
+        except ValueError as exc:
+            # Cycle detected — fall back to sequential (one task per wave)
+            waves = [[i] for i in range(len(self.subtasks))]
+            self.console.print(f"[yellow]DAG cycle fallback: {exc}[/yellow]")
         
-        for i, task in enumerate(subtasks):
-            # Fire pre-task hook
-            fire_hook("pre_agent_task", session_id=self.session_id, extra={"subtask": task.model_dump()})
+        # If parallel disabled, force sequential
+        if not self.parallel_config.enabled:
+            waves = [[i] for i in range(len(self.subtasks))]
+        
+        all_results: list[SubTaskResult] = []
+        stuck = False
+        
+        # Execute wave by wave
+        for wave_index, wave in enumerate(waves):
+            if stuck:
+                break
             
-            # Execute subtask with retry logic
-            result_1 = self._execute_subtask(task, attempt=1)
-            
-            # Apply verifier result to SubTaskResult
-            verification_1 = self.verifier.verify(task, result_1)
-            result_1.passed = verification_1.passed
-            
-            if verification_1.passed:
-                results.append(result_1)
-                fire_hook("post_agent_task", session_id=self.session_id, extra={"subtask": task.model_dump(), "result": result_1.model_dump()})
-                continue
-            
-            # Check for unretryable environment errors
-            if is_unretryable(result_1):
-                error_text = result_1.detail.get('error', '') + result_1.detail.get('output', '')
-                escalation_msg = f"Stuck on execute: environment error — {error_text[:200]}. This may require manual setup (e.g. installing a runtime or configuring WSL)."
-                fire_hook("agent_stuck", session_id=self.session_id, extra={"subtask": task.model_dump(), "results": [result_1.model_dump()]})
-                
-                # Add failed result and escalate
-                results.append(result_1)
-                return AgentTurnResult(
-                    session_id=self.session_id or "unknown",
-                    turn_index=self.turn_index,
-                    user_prompt=user_prompt,
-                    subtasks=subtasks,
-                    results=results,
-                    final_status="stuck",
-                    agent_reply=escalation_msg
+            if len(wave) == 1:
+                # Single task — run directly, no thread overhead
+                result = self._execute_subtask_with_retry(
+                    self.subtasks[wave[0]], wave_index=wave_index
                 )
-            
-            # Retry with modified approach
-            modified_task = self.task_decomposer.modify_subtask(task, result_1.detail)
-            result_2 = self._execute_subtask(modified_task, attempt=2)
-            
-            # Preserve previous attempt detail
-            result_2.previous_attempt_detail = result_1.detail
-            
-            # Apply verifier result to SubTaskResult
-            verification_2 = self.verifier.verify(modified_task, result_2)
-            result_2.passed = verification_2.passed
-            
-            if verification_2.passed:
-                results.append(result_2)
-                fire_hook("post_agent_task", session_id=self.session_id, extra={"subtask": modified_task.model_dump(), "result": result_2.model_dump()})
-                continue
-            
-            # Escalate to user
-            escalation_message = self._escalate(task, [result_1, result_2])
-            fire_hook("agent_stuck", session_id=self.session_id, extra={"subtask": task.model_dump(), "results": [result_1.model_dump(), result_2.model_dump()]})
-            
-            # Add incomplete results so far
-            results.extend([result_1, result_2])
+                all_results.append(result)
+                if result.status == "stuck":
+                    stuck = True
+            else:
+                # Multiple independent tasks — run concurrently
+                wave_results: dict[int, SubTaskResult] = {}
+                with ThreadPoolExecutor(
+                    max_workers=min(len(wave), self.parallel_config.max_workers)
+                ) as executor:
+                    future_to_idx: dict[Future, int] = {
+                        executor.submit(
+                            self._execute_subtask_with_retry,
+                            self.subtasks[idx],
+                            wave_index,
+                        ): idx
+                        for idx in wave
+                    }
+                    for future in as_completed(future_to_idx):
+                        idx = future_to_idx[future]
+                        try:
+                            wave_results[idx] = future.result()
+                        except Exception as exc:
+                            # Worker raised unexpectedly — treat as stuck
+                            wave_results[idx] = SubTaskResult(
+                                subtask=self.subtasks[idx],
+                                status="stuck",
+                                output=f"Worker exception: {exc}",
+                                wave_index=wave_index,
+                            )
+                
+                # Preserve original subtask ordering within the wave results
+                for idx in wave:
+                    all_results.append(wave_results[idx])
+                    if wave_results[idx].status == "stuck":
+                        stuck = True
+        
+        # Determine final status
+        if stuck:
             final_status = "stuck"
-            
-            # Save partial turn and return
-            agent_reply = f"Stuck on {task.type}: {escalation_message}"
-            self._save_turn(user_prompt, subtasks[:i+1], results, agent_reply)
-            
-            return AgentTurnResult(
-                session_id=self.session_id or "unknown",
-                turn_index=self.turn_index,
-                user_prompt=user_prompt,
-                subtasks=subtasks[:i+1],
-                results=results,
-                final_status="stuck",
-                agent_reply=agent_reply
-            )
+        elif all(r.passed for r in all_results):
+            final_status = "completed"
+        else:
+            final_status = "partial"
         
-        # All subtasks completed
-        final_status = "completed"
-        agent_reply = self._generate_summary(subtasks, results)
-        
-        # Save turn to memory
-        self._save_turn(user_prompt, subtasks, results, agent_reply)
+        # Generate summary and save turn
+        agent_reply = self._generate_summary(self.subtasks, all_results)
+        self._save_turn(user_prompt, self.subtasks, all_results, agent_reply)
         
         return AgentTurnResult(
             session_id=self.session_id or "unknown",
             turn_index=self.turn_index,
             user_prompt=user_prompt,
-            subtasks=subtasks,
-            results=results,
+            subtasks=self.subtasks,
+            results=all_results,
             final_status=final_status,
             agent_reply=agent_reply
         )
+    
+    def _execute_subtask_with_retry(
+        self,
+        subtask: SubTask,
+        wave_index: int = 0,
+    ) -> SubTaskResult:
+        """
+        Execute a single subtask with up to one retry.
+        Thread-safe: all DB writes are guarded by self._db_lock.
+        Returns SubTaskResult with status 'completed' or 'stuck'.
+        """
+        # Fire pre-task hook
+        fire_hook("pre_agent_task", session_id=self.session_id, extra={"subtask": subtask.model_dump()})
+        
+        # First attempt
+        result_1 = self._execute_subtask(subtask, attempt=1)
+        result_1.wave_index = wave_index
+        
+        # Apply verifier result to SubTaskResult
+        verification_1 = self.verifier.verify(subtask, result_1)
+        result_1.passed = verification_1.passed
+        
+        if verification_1.passed:
+            fire_hook("post_agent_task", session_id=self.session_id, extra={"subtask": subtask.model_dump(), "result": result_1.model_dump()})
+            return result_1
+        
+        # Check for unretryable environment errors
+        if is_unretryable(result_1):
+            error_text = result_1.detail.get('error', '') + result_1.detail.get('output', '')
+            escalation_msg = f"Stuck on execute: environment error — {error_text[:200]}. This may require manual setup (e.g. installing a runtime or configuring WSL)."
+            fire_hook("agent_stuck", session_id=self.session_id, extra={"subtask": subtask.model_dump(), "results": [result_1.model_dump()]})
+            
+            # Return stuck result
+            result_1.status = "stuck"
+            return result_1
+        
+        # Retry with modified approach
+        modified_task = self.task_decomposer.modify_subtask(subtask, result_1.detail)
+        result_2 = self._execute_subtask(modified_task, attempt=2)
+        result_2.wave_index = wave_index
+        
+        # Preserve previous attempt detail
+        result_2.previous_attempt_detail = result_1.detail
+        
+        # Apply verifier result to SubTaskResult
+        verification_2 = self.verifier.verify(modified_task, result_2)
+        result_2.passed = verification_2.passed
+        
+        if verification_2.passed:
+            fire_hook("post_agent_task", session_id=self.session_id, extra={"subtask": modified_task.model_dump(), "result": result_2.model_dump()})
+            return result_2
+        
+        # Escalate to user
+        escalation_message = self._escalate(subtask, [result_1, result_2])
+        fire_hook("agent_stuck", session_id=self.session_id, extra={"subtask": subtask.model_dump(), "results": [result_1.model_dump(), result_2.model_dump()]})
+        
+        # Return stuck result
+        result_2.status = "stuck"
+        return result_2
     
     def _execute_subtask(self, task: SubTask, attempt: int) -> SubTaskResult:
         """Execute a single subtask."""
@@ -218,18 +275,21 @@ class AgentOrchestrator:
         
         # Save session to database only if it's new
         from .db import db
-        if not db.get_session(session_id_to_use):
-            db.create_session(session_id_to_use, goal, plan_result.language)
+        with self._db_lock:
+            if not db.get_session(session_id_to_use):
+                db.create_session(session_id_to_use, goal, plan_result.language)
         
         # Save plan to database
-        db.save_plan(
-            plan_id=str(uuid.uuid4())[:8],
-            session_id=session_id_to_use,
-            plan_json=plan_result.model_dump_json()
-        )
+        with self._db_lock:
+            db.save_plan(
+                plan_id=str(uuid.uuid4())[:8],
+                session_id=session_id_to_use,
+                plan_json=plan_result.model_dump_json()
+            )
         
         # Update plan approval
-        db.update_plan_approval(session_id_to_use, True)
+        with self._db_lock:
+            db.update_plan_approval(session_id_to_use, True)
         
         return {
             "session_id": plan_result.session_id,
@@ -266,14 +326,16 @@ class AgentOrchestrator:
         # Save build record
         build_id = str(uuid.uuid4())
         started_at = datetime.now(timezone.utc).isoformat() + "Z"
-        db.insert_build(build_id, session_id, str(workspace), started_at)
+        with self._db_lock:
+            db.insert_build(build_id, session_id, str(workspace), started_at)
         
         # Build project
         generated_files = build_project(plan, workspace, self.console)
         
         # Complete build
         completed_at = datetime.now(timezone.utc).isoformat() + "Z"
-        db.complete_build(build_id, completed_at)
+        with self._db_lock:
+            db.complete_build(build_id, completed_at)
         
         return {
             "files_generated": len(generated_files),
@@ -597,7 +659,8 @@ class AgentOrchestrator:
             f"{len(subtasks)} subtasks — {task_summary}"
         )
         
-        add_note(self.session_id, note_content)
+        with self._db_lock:
+            add_note(self.session_id, note_content)
     
     def get_watch_events(self) -> list[WatchEvent]:
         """Get new watch events from the bridge."""

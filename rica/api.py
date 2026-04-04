@@ -692,33 +692,35 @@ def delete_note(note_id: int) -> dict:
 
 # L18 Autonomous Agent API
 
-def run_agent_turn(session_id: Optional[str], prompt: str, last_n_history: int = 10) -> dict:
-    """Execute one agent turn. Returns AgentTurnResult as dict.
-    
-    Args:
-        session_id: Session ID (None for new session)
-        prompt: User prompt
-        last_n_history: Number of recent turns to include in context
-        
-    Returns:
-        Dict with keys: session_id, turn_index, user_prompt, subtasks, results,
-              final_status, agent_reply
+def run_agent_turn(
+    session_id: str,
+    prompt: str,
+    last_n_history: int = 10,
+    parallel: bool = True,
+    max_workers: int = 4,
+) -> dict:
     """
-    from .agent import AgentOrchestrator
-    
-    console = _create_console()
-    orchestrator = AgentOrchestrator(session_id, console)
-    result = orchestrator.run_turn(prompt)
-    
-    return {
-        "session_id": result.session_id,
-        "turn_index": result.turn_index,
-        "user_prompt": result.user_prompt,
-        "subtasks": [t.model_dump() for t in result.subtasks],
-        "results": [r.model_dump() for r in result.results],
-        "final_status": result.final_status,
-        "agent_reply": result.agent_reply
-    }
+    Run one agent turn for the given session.
+
+    Args:
+        session_id:      Target session.
+        prompt:          User instruction for this turn.
+        last_n_history:  How many prior turns to include in LLM context.
+        parallel:        If False, force sequential subtask execution.
+        max_workers:     Max concurrent threads when parallel=True (1-16).
+
+    Returns:
+        Plain dict representation of AgentTurnResult.
+    """
+    from rica.agent import AgentOrchestrator
+    from rica.models import AgentParallelConfig
+    config = AgentParallelConfig(enabled=parallel, max_workers=max_workers)
+    orchestrator = AgentOrchestrator(
+        session_id=session_id,
+        parallel_config=config,
+    )
+    result = orchestrator.run_turn(prompt, last_n_history=last_n_history)
+    return result.model_dump()
 
 
 def get_agent_history(session_id: str, last_n: int = 20) -> List[dict]:

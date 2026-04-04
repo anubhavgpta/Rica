@@ -421,6 +421,7 @@ def run_dashboard(refresh: int = 5, session_id: Optional[str] = None, agent_mode
 def build_agent_panel(agent_orchestrator, agent_turns, watch_events, waiting_for_user) -> Panel:
     """Build the agent panel for agent mode dashboard."""
     from .models import AgentTurnResult
+    from .dag import build_execution_waves
     
     # Get current session info
     session_id = agent_orchestrator.session_id or "no-session"
@@ -446,17 +447,51 @@ def build_agent_panel(agent_orchestrator, agent_turns, watch_events, waiting_for
         content_lines.append(f"[user]  {latest_turn.user_prompt}")
         content_lines.append(f"[agent] {latest_turn.agent_reply}")
         
-        # Show subtask results
+        # Show subtask results with parallel execution visualization
         if latest_turn.subtasks:
             content_lines.append("")
-            for i, (task, result) in enumerate(zip(latest_turn.subtasks, latest_turn.results)):
-                status_symbol = "✓" if result.passed else "✗"
-                content_lines.append(f"        {i+1}. {task.type}")
-                if task.goal:
-                    content_lines.append(f"           {task.goal[:50]}{'...' if len(task.goal) > 50 else ''}")
-                content_lines.append(f"           {status_symbol} {result.summary}")
-        
-        content_lines.append("")
+            content_lines.append("Agent Tasks")
+            
+            # Build execution waves for visualization
+            try:
+                waves = build_execution_waves(latest_turn.subtasks)
+            except ValueError:
+                # Fallback to sequential if cycle detected
+                waves = [[i] for i in range(len(latest_turn.subtasks))]
+            
+            # Display waves
+            for wave_index, wave in enumerate(waves):
+                if len(wave) == 1:
+                    # Sequential task
+                    content_lines.append(f"  Wave {wave_index + 1}  (sequential)")
+                else:
+                    # Parallel tasks
+                    content_lines.append(f"  Wave {wave_index + 1}  (parallel x{len(wave)})")
+                
+                # Show tasks in this wave
+                for idx in wave:
+                    if idx < len(latest_turn.subtasks) and idx < len(latest_turn.results):
+                        task = latest_turn.subtasks[idx]
+                        result = latest_turn.results[idx]
+                        
+                        # Determine status indicator
+                        if result.status == "stuck" or not result.passed:
+                            status_indicator = "[fail]"
+                        elif result.wave_index < wave_index:
+                            status_indicator = "[done]"
+                        elif result.wave_index == wave_index and hasattr(result, '_running') and result._running:
+                            status_indicator = "[run]"
+                        else:
+                            status_indicator = "[wait]"
+                        
+                        # Show task info
+                        task_desc = task.goal or task.path or task.type
+                        if len(task_desc) > 50:
+                            task_desc = task_desc[:47] + "..."
+                        
+                        content_lines.append(f"    {status_indicator}  {task.type:<8}  {task_desc}")
+            
+            content_lines.append("")
     
     # Show watch events
     recent_watch_events = watch_events[-5:]  # Show last 5 events

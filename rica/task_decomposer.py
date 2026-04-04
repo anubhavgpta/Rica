@@ -10,6 +10,7 @@ from rich.console import Console
 from .agent_memory import load_history
 from .config import GEMINI_API_KEY
 from .models import ProjectContext, SubTask
+from .dag import validate_depends_on
 
 
 class TaskDecomposer:
@@ -129,9 +130,40 @@ with adjustments that might resolve the failure. No preamble, no fences."""
                 if "type" not in task_dict:
                     continue
                 
+                # Map new prompt format to existing SubTask model
+                # New format: type, description, target_path, depends_on
+                # Existing model: type, goal, path, depends_on
+                mapped_dict = {
+                    "type": task_dict["type"],
+                    "depends_on": task_dict.get("depends_on", []),
+                }
+                
+                # Map description to goal for non-plan tasks, or keep as description context
+                if "description" in task_dict:
+                    if task_dict["type"] == "plan":
+                        mapped_dict["goal"] = task_dict["description"]
+                    # For other task types, we'll use description in execution context
+                
+                # Map target_path to path
+                if "target_path" in task_dict and task_dict["target_path"]:
+                    mapped_dict["path"] = task_dict["target_path"]
+                
                 # Create SubTask with defaults
-                subtask = SubTask(**task_dict)
+                subtask = SubTask(**mapped_dict)
                 subtasks.append(subtask)
+            
+            # Validate depends_on fields
+            errors = validate_depends_on(subtasks)
+            if errors:
+                for err in errors:
+                    self.console.print(f"[yellow]DAG warning: {err}[/yellow]")
+                # Sanitise: zero out invalid deps to ensure sequential fallback
+                for i, task in enumerate(subtasks):
+                    deps = task.depends_on or []
+                    task.depends_on = [
+                        d for d in deps
+                        if d != i and 0 <= d < len(subtasks)
+                    ]
             
             return subtasks
             

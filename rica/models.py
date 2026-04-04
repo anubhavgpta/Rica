@@ -180,6 +180,13 @@ class SubTask(BaseModel):
     max_iter: int = 5
     changed_only: bool = True
     question: str | None = None
+    depends_on: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Indices of other subtasks in the same turn that must complete "
+            "before this subtask can start. Empty list means no dependencies."
+        ),
+    )
 
 
 class SubTaskResult(BaseModel):
@@ -190,6 +197,22 @@ class SubTaskResult(BaseModel):
     detail: dict          # raw return value from the called layer
     attempt: int          # 1 = first try, 2 = retry
     previous_attempt_detail: dict | None = None  # populated on retry
+    wave_index: int = Field(
+        default=0,
+        description="Zero-based index of the execution wave this subtask ran in.",
+    )
+    status: str = Field(
+        default="completed",
+        description="Status of this subtask: 'completed', 'stuck', or 'failed'.",
+    )
+    subtask: SubTask | None = Field(
+        default=None,
+        description="The subtask that produced this result.",
+    )
+    output: str | None = Field(
+        default=None,
+        description="Output string for error reporting.",
+    )
 
 
 class AgentTurnResult(BaseModel):
@@ -224,6 +247,23 @@ class ProjectContext(BaseModel):
     active_snapshot_id: int | None    # latest file_snapshots row id
     last_build_status: str | None     # 'success' | 'failed' | None
     last_debug_status: str | None     # 'resolved' | 'exhausted' | None
+
+
+class AgentParallelConfig(BaseModel):
+    """
+    Controls parallel execution behaviour for the agent orchestrator.
+    Stored in agent_memory as JSON alongside AgentTurnResult.
+    """
+    max_workers: int = Field(
+        default=4,
+        ge=1,
+        le=16,
+        description="Maximum number of concurrent subtask threads.",
+    )
+    enabled: bool = Field(
+        default=True,
+        description="If False, fall back to sequential execution regardless of DAG.",
+    )
 
 
 class WatchEvent(BaseModel):
