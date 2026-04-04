@@ -36,12 +36,12 @@ Output ONLY a JSON array. No markdown fences, no explanation, no preamble.
 
 Example output:
 [
-  {{"type": "plan",    "description": "Plan the Flask app",         "target_path": null,       "depends_on": []}},
-  {{"type": "build",   "description": "Generate Flask app code",    "target_path": null,       "depends_on": [0]}},
-  {{"type": "review",  "description": "Review app.py",              "target_path": "app.py",   "depends_on": [1]}},
-  {{"type": "explain", "description": "Explain app.py structure",   "target_path": "app.py",   "depends_on": [1]}},
-  {{"type": "execute", "description": "Run tests",                  "target_path": null,       "depends_on": [1]}},
-  {{"type": "debug",   "description": "Debug failures if any",      "target_path": null,       "depends_on": [4]}}
+  {{{{"type": "plan",    "description": "Plan the Flask app",         "target_path": null,       "depends_on": []}}}},
+  {{{{"type": "build",   "description": "Generate Flask app code",    "target_path": null,       "depends_on": [0]}}}},
+  {{{{"type": "review",  "description": "Review app.py",              "target_path": "app.py",   "depends_on": [1]}}}},
+  {{{{"type": "explain", "description": "Explain app.py structure",   "target_path": "app.py",   "depends_on": [1]}}}},
+  {{{{"type": "execute", "description": "Run tests",                  "target_path": null,       "depends_on": [1]}}}},
+  {{{{"type": "debug",   "description": "Debug failures if any",      "target_path": null,       "depends_on": [4]}}}}
 ]
 
 In this example subtasks 2, 3, and 4 all depend only on subtask 1 and are

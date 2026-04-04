@@ -198,7 +198,34 @@ with adjustments that might resolve the failure. No preamble, no fences."""
             # Ensure type matches failed task
             task_dict["type"] = failed_task.type
             
-            return SubTask(**task_dict)
+            # Handle new prompt format mapping (similar to decompose method)
+            mapped_dict = {
+                "type": task_dict["type"],
+                "depends_on": task_dict.get("depends_on", []),
+            }
+            
+            # Convert depends_on values to integers if they're strings
+            if isinstance(mapped_dict["depends_on"], list):
+                mapped_dict["depends_on"] = [
+                    int(d) if isinstance(d, str) else d
+                    for d in mapped_dict["depends_on"]
+                ]
+            
+            # Map description to goal for plan tasks
+            if "description" in task_dict:
+                if task_dict["type"] == "plan":
+                    mapped_dict["goal"] = task_dict["description"]
+            
+            # Map target_path to path
+            if "target_path" in task_dict and task_dict["target_path"]:
+                mapped_dict["path"] = task_dict["target_path"]
+            
+            # Preserve other fields from original task if not in response
+            for field in ["goal", "path", "lang", "command", "max_iter", "changed_only", "question"]:
+                if field not in mapped_dict and hasattr(failed_task, field):
+                    mapped_dict[field] = getattr(failed_task, field)
+            
+            return SubTask(**mapped_dict)
             
         except Exception as e:
             self.console.print(f"[red]Subtask modification failed: {e}[/red]")
