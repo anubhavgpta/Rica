@@ -41,7 +41,7 @@ def create_plan(goal: str, session_id: str, lang_override: str = None) -> BuildP
     ) as progress:
         task = progress.add_task("Thinking about your goal...", total=None)
         try:
-            response = llm.generate(system_prompt, user_prompt)
+            response = llm.generate(system_prompt, user_prompt, layer="L1", call_type="plan", session_id=session_id)
         except Exception as e:
             console.print(f"[red]Error generating plan: {e}[/red]")
             raise

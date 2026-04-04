@@ -94,7 +94,7 @@ def _load_files(
     return result
 
 
-def explain_codebase(path: Path, language: str, console: Console) -> ExplainReport:
+def explain_codebase(path: Path, language: str, console: Console, *, session_id: str | None = None) -> ExplainReport:
     """Generate a plain-English explanation of a codebase."""
     # Language detection for multi-language support
     if language == "auto" or "," in language:
@@ -147,7 +147,7 @@ def explain_codebase(path: Path, language: str, console: Console) -> ExplainRepo
     console.print("[dim]Generating explanation...[/dim]")
 
     # Call LLM
-    raw = llm.generate(system_prompt="", user_prompt=formatted_prompt)
+    raw = llm.generate(system_prompt="", user_prompt=formatted_prompt, layer="L7", call_type="explain", session_id=session_id)
     explanation = _strip_fences(raw).strip()
 
     if not explanation:

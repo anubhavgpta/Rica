@@ -156,7 +156,10 @@ Return ONLY the raw file content. No markdown fences, no explanations, no extra 
             
             response = generate(
                 system_prompt_file="rica/prompts/codegen.txt",
-                user_prompt=prompt
+                user_prompt=prompt,
+                layer="L10",
+                call_type="rebuild",
+                session_id=session_id
             )
             
             # Strip fences and write to file

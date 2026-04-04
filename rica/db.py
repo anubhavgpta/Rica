@@ -219,15 +219,41 @@ class Database:
                 )
             """)
             
-            # Create index for notes
+            # Create llm_usage table
             conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_notes_session ON notes(session_id)
+                CREATE TABLE IF NOT EXISTS llm_usage (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id     TEXT,
+                    layer          TEXT NOT NULL,
+                    call_type      TEXT NOT NULL,
+                    input_tokens   INTEGER NOT NULL DEFAULT 0,
+                    output_tokens  INTEGER NOT NULL DEFAULT 0,
+                    cached_tokens  INTEGER NOT NULL DEFAULT 0,
+                    model          TEXT NOT NULL,
+                    created_at     TEXT NOT NULL
+                )
             """)
             
             # Create index for agent_memory
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_agent_memory_session
                 ON agent_memory(session_id, turn_index)
+            """)
+            
+            # Create indexes for llm_usage
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_llm_usage_session
+                ON llm_usage(session_id)
+            """)
+            
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_llm_usage_session_layer
+                ON llm_usage(session_id, layer)
+            """)
+            
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_llm_usage_created
+                ON llm_usage(created_at)
             """)
             
             conn.commit()

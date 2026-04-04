@@ -131,7 +131,7 @@ def _load_files(
     return result
 
 
-def refactor_codebase(path: Path, goal: str, language: str | None, console: Console) -> RefactorReport:
+def refactor_codebase(path: Path, goal: str, language: str | None, console: Console, *, session_id: str | None = None) -> RefactorReport:
     """Generate a refactor plan for a codebase."""
     # Language detection
     if language is None or language == "auto" or "," in language:
@@ -199,7 +199,7 @@ def refactor_codebase(path: Path, goal: str, language: str | None, console: Cons
         console.print(f"[dim]Generating {lang} refactor plan...[/dim]")
         
         # Call LLM
-        raw = llm.generate(system_prompt="", user_prompt=formatted_prompt)
+        raw = llm.generate(system_prompt="", user_prompt=formatted_prompt, layer="L8", call_type="refactor", session_id=session_id)
         json_str = _strip_fences(raw).strip()
         
         if not json_str:

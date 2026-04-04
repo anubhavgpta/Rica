@@ -100,6 +100,8 @@ def generate_fix(
     workspace: Path,
     plan: BuildPlan,
     console: Console,
+    *,
+    session_id: str | None = None
 ) -> str:
     """Generate a fix for a given error."""
     # Read current content of the file
@@ -176,7 +178,7 @@ Return ONLY the complete fixed content of {file_path.name}."""
     
     # Generate fix
     try:
-        result = llm.generate(system_prompt=system_prompt, user_prompt=user_prompt)
+        result = llm.generate(system_prompt=system_prompt, user_prompt=user_prompt, layer="L4", call_type="debug", session_id=session_id)
         
         # Strip fences and clean
         cleaned = _strip_fences(result)

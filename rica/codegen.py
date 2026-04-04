@@ -132,7 +132,7 @@ def build_project(plan: BuildPlan, workspace: Path, console: Console) -> List[Ge
         user_prompt = _build_user_prompt(plan, file_plan, generated_files)
         
         # Generate file content
-        raw = llm.generate(CODEGEN_SYSTEM_PROMPT, user_prompt)
+        raw = llm.generate(CODEGEN_SYSTEM_PROMPT, user_prompt, layer="L2", call_type="generate", session_id=session_id)
         content = _strip_fences(raw)
         
         # Create parent directories

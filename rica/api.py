@@ -769,3 +769,47 @@ def clear_agent_history(session_id: str) -> dict:
         "session_id": session_id,
         "turns_deleted": turns_deleted
     }
+
+
+def get_usage(session_id: str | None = None) -> dict:
+    """Return LLM token usage aggregate.
+
+    Args:
+        session_id: If provided, scope to this session.
+                    If None, return global aggregate.
+
+    Returns:
+        {
+            "session_id": str | None,
+            "total_input_tokens": int,
+            "total_output_tokens": int,
+            "total_cached_tokens": int,
+            "total_calls": int,
+            "by_layer": {
+                "<layer>": {
+                    "input_tokens": int,
+                    "output_tokens": int,
+                    "cached_tokens": int,
+                    "calls": int
+                }
+            }
+        }
+    """
+    from rica.usage import get_aggregate_usage
+    result = get_aggregate_usage(session_id=session_id)
+    result["session_id"] = session_id
+    return result
+
+
+def get_usage_detail(session_id: str) -> list[dict]:
+    """Return every individual llm_usage row for the given session_id.
+
+    Each dict has keys:
+        id, session_id, layer, call_type,
+        input_tokens, output_tokens, cached_tokens,
+        model, created_at
+
+    Returns empty list if session has no usage data.
+    """
+    from rica.usage import get_usage_for_session
+    return get_usage_for_session(session_id=session_id)

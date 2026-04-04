@@ -217,9 +217,9 @@ def generate_tests(session_id: str, console: Console) -> TestGenReport:
         console.print(f"[dim]Generating {lang} test suite...[/dim]")
         
         if len(languages) > 1:
-            raw_response = llm.generate(system_prompt, "")
+            raw_response = llm.generate(system_prompt, "", layer="L3", call_type="test", session_id=session_id)
         else:
-            raw_response = llm.generate(system_prompt="", user_prompt=user_prompt)
+            raw_response = llm.generate(system_prompt="", user_prompt=user_prompt, layer="L3", call_type="test", session_id=session_id)
             
         cleaned_response = _strip_fences(raw_response)
         

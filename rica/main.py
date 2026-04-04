@@ -595,7 +595,7 @@ def run(session_id: str, timeout: int = typer.Option(10, "--timeout")) -> None:
         executor_prompt = prompt_path.read_text().strip()
         
         user_msg = f"Exit code: {result.exit_code}\nTimed out: {result.timed_out}\nStdout:\n{result.stdout}\nStderr:\n{result.stderr}"
-        interpretation = llm.generate(system_prompt=executor_prompt, user_prompt=user_msg)
+        interpretation = llm.generate(system_prompt=executor_prompt, user_prompt=user_msg, layer="L3", call_type="test", session_id=session_id)
         
         console.print(Panel(
             interpretation,
@@ -639,7 +639,7 @@ def test(session_id: str) -> None:
         console.print(f"[yellow]No test command configured for {language}[/yellow]")
         raise typer.Exit(0)
     
-    # Resolve {file} placeholder if needed (unlikely for test commands)
+    # Resolve {file} placeholder if needed
     workspace = Path(build["workspace"])
     if "{file}" in " ".join(test_cmd):
         extension = config.get("extension", "")
@@ -650,8 +650,8 @@ def test(session_id: str) -> None:
             raise typer.Exit(1)
         test_cmd = [arg.replace("{file}", str(files[0])) for arg in test_cmd]
     
-    # Run test command (fixed 60s timeout)
-    result = run_command(test_cmd, workspace, timeout=60, console=console)
+    # Run test command
+    result = run_command(test_cmd, workspace, 120, console=console)  # 2 minute timeout for tests
     
     # Save execution
     db.save_execution(result, session_id)
@@ -662,6 +662,12 @@ def test(session_id: str) -> None:
     if result.stderr:
         console.print(Panel(result.stderr, title="stderr", border_style="dim"))
     
+    # Show result
+    if result.exit_code == 0:
+        console.print("[green]PASS[/green]")
+    else:
+        console.print("[red]FAIL[/red]")
+    
     # LLM interpretation
     try:
         # Load executor prompt
@@ -669,7 +675,7 @@ def test(session_id: str) -> None:
         executor_prompt = prompt_path.read_text().strip()
         
         user_msg = f"Exit code: {result.exit_code}\nTimed out: {result.timed_out}\nStdout:\n{result.stdout}\nStderr:\n{result.stderr}"
-        interpretation = llm.generate(system_prompt=executor_prompt, user_prompt=user_msg)
+        interpretation = llm.generate(system_prompt=executor_prompt, user_prompt=user_msg, layer="L3", call_type="test", session_id=session_id)
         
         console.print(Panel(
             interpretation,
@@ -2204,3 +2210,126 @@ def agent_history(
         )
     
     console.print(table)
+
+
+@app.command("usage")
+def usage_cmd(
+    session_id: str = typer.Argument(
+        None,
+        help="Session ID to scope usage to. Omit for global aggregate."
+    ),
+    by_session: bool = typer.Option(
+        False, "--by-session", "-s",
+        help="Show per-session summary table instead of per-layer breakdown."
+    ),
+    top: int = typer.Option(
+        20, "--top", "-n",
+        help="Max rows to show in per-session table."
+    ),
+) -> None:
+    """Show LLM token usage and estimated costs.
+
+    With no arguments: show global aggregate broken down by layer.
+    With SESSION_ID: show aggregate for that session broken down by layer.
+    With --by-session: show one row per session, sorted by total tokens.
+    """
+    from rica.usage import get_aggregate_usage, get_all_session_summaries, get_usage_for_session
+    from rich.table import Table
+    
+    console = get_console()
+    print_banner()
+    
+    if by_session:
+        # Show per-session summary
+        sessions = get_all_session_summaries()
+        
+        if not sessions:
+            console.print("[dim]No usage data found.[/dim]")
+            return
+        
+        # Limit to top N if requested
+        if top > 0:
+            sessions = sessions[:top]
+        
+        table = Table(title="LLM Token Usage by Session", border_style="dim")
+        table.add_column("Session ID", style="cyan")
+        table.add_column("Total Input", style="green", justify="right")
+        table.add_column("Total Output", style="blue", justify="right")
+        table.add_column("Total Cached", style="yellow", justify="right")
+        table.add_column("Calls", style="white", justify="right")
+        table.add_column("First Call", style="dim")
+        table.add_column("Last Call", style="dim")
+        
+        for session in sessions:
+            # Truncate session ID for display
+            display_id = session["session_id"]
+            if len(display_id) > 12:
+                display_id = display_id[:12] + "..."
+            
+            # Format timestamps
+            first_call = session.get("first_call_at", "")
+            last_call = session.get("last_call_at", "")
+            if first_call:
+                first_call = first_call[:19].replace("T", " ")
+            if last_call:
+                last_call = last_call[:19].replace("T", " ")
+            
+            table.add_row(
+                display_id,
+                f"{session['total_input_tokens']:,}",
+                f"{session['total_output_tokens']:,}",
+                f"{session['total_cached_tokens']:,}",
+                f"{session['total_calls']}",
+                first_call,
+                last_call
+            )
+        
+        console.print(table)
+        
+    else:
+        # Show aggregate by layer (global or session-specific)
+        if session_id:
+            # Check if session exists
+            sessions = db.list_sessions()
+            if not any(s["id"] == session_id for s in sessions):
+                console.print(f"[red]Session not found: {session_id}[/red]")
+                raise typer.Exit(1)
+            
+            title = f"LLM Token Usage for Session {session_id}"
+        else:
+            title = "Global LLM Token Usage"
+        
+        aggregate = get_aggregate_usage(session_id)
+        
+        if aggregate["total_calls"] == 0:
+            console.print("[dim]No usage data found.[/dim]")
+            return
+        
+        table = Table(title=title, border_style="dim")
+        table.add_column("Layer", style="cyan")
+        table.add_column("Input Tokens", style="green", justify="right")
+        table.add_column("Output Tokens", style="blue", justify="right")
+        table.add_column("Cached Tokens", style="yellow", justify="right")
+        table.add_column("Calls", style="white", justify="right")
+        
+        # Add rows for each layer
+        for layer, data in aggregate["by_layer"].items():
+            table.add_row(
+                layer,
+                f"{data['input_tokens']:,}",
+                f"{data['output_tokens']:,}",
+                f"{data['cached_tokens']:,}",
+                f"{data['calls']}"
+            )
+        
+        # Add total row
+        table.add_row(
+            "TOTAL",
+            f"{aggregate['total_input_tokens']:,}",
+            f"{aggregate['total_output_tokens']:,}",
+            f"{aggregate['total_cached_tokens']:,}",
+            f"{aggregate['total_calls']}",
+            style="bold white"
+        )
+        
+        console.print(table)

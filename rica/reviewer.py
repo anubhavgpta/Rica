@@ -141,6 +141,8 @@ def review_codebase(
     path: Path,
     language: str | None,
     console: Console,
+    *,
+    session_id: str | None = None
 ) -> ReviewReport:
     """Analyze an external codebase and return a structured ReviewReport."""
     # Language detection
@@ -192,7 +194,7 @@ def review_codebase(
         if len(languages) > 1:
             user_prompt = f"Language: {lang}\n\n{user_prompt}"
         
-        raw = llm.generate(system_prompt, user_prompt)
+        raw = llm.generate(system_prompt, user_prompt, layer="L5", call_type="review", session_id=session_id)
         raw = _strip_fences(raw)
         
         # Parse JSON
@@ -268,5 +270,5 @@ def fix_file(
         ]
     )
 
-    raw = llm.generate(system_prompt, user_prompt)
+    raw = llm.generate(system_prompt, user_prompt, layer="L5", call_type="review", session_id=session_id)
     return _strip_fences(raw)
