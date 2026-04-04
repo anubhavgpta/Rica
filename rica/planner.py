@@ -59,7 +59,8 @@ def create_plan(goal: str, session_id: str, lang_override: str = None) -> BuildP
     # Parse JSON
     try:
         plan_data = json.loads(response)
-        plan_data["session_id"] = session_id  # Ensure session_id is set
+        # Force session_id to be the provided one, overriding whatever LLM returned
+        plan_data["session_id"] = session_id
         plan = BuildPlan.model_validate(plan_data)
         
         # Tag each file with the correct language

@@ -1,6 +1,6 @@
 """Pydantic models for Rica planning system."""
 
-from typing import List, Optional
+from typing import List, Optional, Literal
 from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
@@ -163,3 +163,70 @@ class RebuildReport(BaseModel):
     files_rewritten: list[str]
     files_skipped: list[str]
     rebuilt_at: str
+
+
+# L18 Autonomous Agent Models
+
+class SubTask(BaseModel):
+    """A single subtask in an agent execution plan."""
+    type: Literal['plan', 'build', 'execute', 'debug', 'review', 'fix',
+                  'explain', 'refactor', 'gen_tests', 'rebuild',
+                  'watch_start', 'watch_stop', 'ask_user']
+    goal: str | None = None
+    session_id: str | None = None
+    path: str | None = None
+    lang: str | None = None
+    command: str | None = None
+    max_iter: int = 5
+    changed_only: bool = True
+    question: str | None = None
+
+
+class SubTaskResult(BaseModel):
+    """Result of executing a single subtask."""
+    task_type: str
+    passed: bool
+    summary: str          # one-line human-readable outcome
+    detail: dict          # raw return value from the called layer
+    attempt: int          # 1 = first try, 2 = retry
+
+
+class AgentTurnResult(BaseModel):
+    """Result of a complete agent turn."""
+    session_id: str
+    turn_index: int
+    user_prompt: str
+    subtasks: list[SubTask]
+    results: list[SubTaskResult]
+    final_status: Literal['completed', 'partial', 'stuck', 'waiting_for_user']
+    agent_reply: str      # human-readable summary to display in TUI
+
+
+class AgentMemoryEntry(BaseModel):
+    """Entry in agent memory for persistence."""
+    id: int
+    session_id: str
+    turn_index: int
+    role: str
+    content: str
+    subtasks: list[SubTask] | None
+    trace: list[SubTaskResult] | None
+    created_at: str
+
+
+class ProjectContext(BaseModel):
+    """Context about the current project for agent decision making."""
+    session_id: str | None
+    workspace_path: str | None        # resolved from session if exists
+    languages: list[str]              # from BuildPlan.languages if exists
+    recent_history: list[dict]        # last N agent_memory turns
+    active_snapshot_id: int | None    # latest file_snapshots row id
+    last_build_status: str | None     # 'success' | 'failed' | None
+    last_debug_status: str | None     # 'resolved' | 'exhausted' | None
+
+
+class WatchEvent(BaseModel):
+    """Event from file watcher in agent mode."""
+    path: str
+    issues: list[dict]  # List of issues found by watcher
+    timestamp: str

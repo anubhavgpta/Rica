@@ -30,6 +30,10 @@ VALID_EVENTS = [
     "pre_export",
     "post_export",
     "post_import",
+    # L18 agent events
+    "pre_agent_task",
+    "post_agent_task", 
+    "agent_stuck",
 ]
 
 

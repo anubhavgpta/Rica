@@ -16,6 +16,75 @@ from .registry import LANGUAGE_REGISTRY
 from .reviewer import review_codebase
 
 
+class FileWatcher:
+    """File watcher for agent mode integration."""
+    
+    def __init__(self):
+        self._observer: Optional[Observer] = None
+        self._callback = None
+        self._prior_report: Optional[ReviewReport] = None
+    
+    def start(self, path: str, lang: Optional[str] = None, callback=None) -> None:
+        """Start watching a path."""
+        self._callback = callback
+        watch_path = Path(path)
+        
+        if not watch_path.is_dir():
+            raise ValueError(f"Path is not a directory: {path}")
+        
+        # Run initial review
+        try:
+            self._prior_report = review_codebase(watch_path, lang, Console())
+        except Exception as e:
+            raise RuntimeError(f"Initial review failed: {e}")
+        
+        # Set up file system observer
+        event_handler = ChangeHandler(self._on_change)
+        self._observer = Observer()
+        self._observer.schedule(event_handler, str(watch_path), recursive=True)
+        self._observer.start()
+    
+    def stop(self) -> None:
+        """Stop watching."""
+        if self._observer:
+            self._observer.stop()
+            self._observer.join()
+            self._observer = None
+    
+    def _on_change(self) -> None:
+        """Handle file change event."""
+        if self._callback and self._prior_report:
+            try:
+                # Re-review the codebase
+                current_report = review_codebase(Path(self._prior_report.path), self._prior_report.language, Console())
+                
+                # Calculate new issues
+                new_issues, _ = diff_reports(self._prior_report, current_report)
+                
+                # Convert to dict format for callback
+                issues = [
+                    {
+                        "file": issue.file,
+                        "line": issue.line,
+                        "severity": issue.severity,
+                        "category": issue.category,
+                        "description": issue.description
+                    }
+                    for issue in new_issues
+                ]
+                
+                # Call callback with issues
+                self._callback(self._prior_report.path, issues)
+                
+                # Update prior report
+                self._prior_report = current_report
+                
+            except Exception as e:
+                # Send error event
+                if self._callback:
+                    self._callback(self._prior_report.path, [{"error": str(e)}])
+
+
 # Runtime directories to skip (mirrors L2/L5 filter)
 _SKIP_DIRS = frozenset(
     {

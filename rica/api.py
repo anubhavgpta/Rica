@@ -688,3 +688,84 @@ def delete_note(note_id: int) -> dict:
         raise ValueError(f"Note {note_id} not found")
     
     return {"note_id": note_id, "deleted": True}
+
+
+# L18 Autonomous Agent API
+
+def run_agent_turn(session_id: Optional[str], prompt: str, last_n_history: int = 10) -> dict:
+    """Execute one agent turn. Returns AgentTurnResult as dict.
+    
+    Args:
+        session_id: Session ID (None for new session)
+        prompt: User prompt
+        last_n_history: Number of recent turns to include in context
+        
+    Returns:
+        Dict with keys: session_id, turn_index, user_prompt, subtasks, results,
+              final_status, agent_reply
+    """
+    from .agent import AgentOrchestrator
+    
+    console = _create_console()
+    orchestrator = AgentOrchestrator(session_id, console)
+    result = orchestrator.run_turn(prompt)
+    
+    return {
+        "session_id": result.session_id,
+        "turn_index": result.turn_index,
+        "user_prompt": result.user_prompt,
+        "subtasks": [t.model_dump() for t in result.subtasks],
+        "results": [r.model_dump() for r in result.results],
+        "final_status": result.final_status,
+        "agent_reply": result.agent_reply
+    }
+
+
+def get_agent_history(session_id: str, last_n: int = 20) -> List[dict]:
+    """Return agent memory turns for a session, oldest first.
+    
+    Args:
+        session_id: Session ID
+        last_n: Number of recent turns to return
+        
+    Returns:
+        List of dicts with keys: id, session_id, turn_index, role, content,
+               subtasks, trace, created_at
+    """
+    from .agent_memory import load_history
+    
+    history = load_history(session_id, last_n=last_n)
+    
+    # Convert to dict format for API
+    return [
+        {
+            "id": entry["id"],
+            "session_id": entry["session_id"],
+            "turn_index": entry["turn_index"],
+            "role": entry["role"],
+            "content": entry["content"],
+            "subtasks": entry.get("subtasks"),
+            "trace": entry.get("trace"),
+            "created_at": entry["created_at"]
+        }
+        for entry in history
+    ]
+
+
+def clear_agent_history(session_id: str) -> dict:
+    """Delete all agent_memory rows for a session.
+    
+    Args:
+        session_id: Session ID
+        
+    Returns:
+        Dict with session_id and turns_deleted
+    """
+    from .agent_memory import clear_history
+    
+    turns_deleted = clear_history(session_id)
+    
+    return {
+        "session_id": session_id,
+        "turns_deleted": turns_deleted
+    }

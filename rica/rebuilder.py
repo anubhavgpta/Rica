@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import hashlib
 
 from . import db
+from .db import get_latest_build, get_plan_for_session
 from .models import BuildPlan, RebuildReport
 from .snapshotter import load_snapshot, diff_snapshot
 from .dep_graph import build_dep_graph, cascade_changed
@@ -72,12 +73,24 @@ def rebuild_changed(
     # 2. Load prior snapshot
     old_snapshot_dict = load_snapshot(session_id)
     if not old_snapshot_dict:
-        console.print("[yellow]No prior snapshot found. Run `rica build` first.[/yellow]")
+        # No prior snapshot - treat all files as changed and create initial snapshot
+        console.print("[dim]No prior snapshot found. Treating all files as changed and creating initial snapshot.[/dim]")
+        
+        # Get all plan files as "changed"
+        all_plan_files = []
+        for milestone in plan.milestones:
+            for file_plan in milestone.files:
+                all_plan_files.append(file_plan.path)
+        
+        # Create initial snapshot after rebuild
+        from . import snapshotter
+        snapshotter.take_snapshot(session_id, workspace)
+        
         return RebuildReport(
             session_id=session_id,
             workspace=str(workspace),
-            files_checked=0,
-            files_changed=[],
+            files_checked=len(current_snapshot_data),
+            files_changed=all_plan_files,
             files_cascaded=[],
             files_rewritten=[],
             files_skipped=[],
@@ -199,3 +212,80 @@ Return ONLY the raw file content. No markdown fences, no explanations, no extra 
         files_skipped=skipped,
         rebuilt_at=datetime.now(timezone.utc).isoformat() + "Z"
     )
+
+
+def rebuild(session_id: str, changed_only: bool = False) -> RebuildReport:
+    """Main rebuild function that agent orchestrator calls.
+    
+    Args:
+        session_id: Session ID to rebuild
+        changed_only: Whether to only rebuild changed files
+        
+    Returns:
+        RebuildReport with rebuild results
+    """
+    try:
+        # Get workspace and plan
+        build = get_latest_build(session_id)
+        if not build:
+            raise ValueError(f"No build found for session {session_id}")
+        
+        workspace = Path(build["workspace"])
+        plan_data = get_plan_for_session(session_id)
+        if not plan_data:
+            raise ValueError(f"No plan found for session {session_id}")
+        
+        plan = BuildPlan.model_validate_json(plan_data["plan_json"])
+        
+        # If changed_only is False, rebuild all files
+        if not changed_only:
+            # Get all plan files as "changed"
+            all_files = []
+            for milestone in plan.milestones:
+                for file_plan in milestone.files:
+                    all_files.append(file_plan.path)
+            
+            return rebuild_changed(session_id, workspace, plan, all_files)
+        else:
+            # Get actual changed files from snapshot diff
+            current_snapshot_data = take_snapshot_without_saving(workspace)
+            saved_snapshot_data = load_snapshot(session_id)
+            
+            if not saved_snapshot_data:
+                # No saved snapshot, treat all files as changed
+                all_files = []
+                for milestone in plan.milestones:
+                    for file_plan in milestone.files:
+                        all_files.append(file_plan.path)
+                return rebuild_changed(session_id, workspace, plan, all_files)
+            
+            # Compare snapshots to find changed files
+            changed_paths = []
+            saved_dict = saved_snapshot_data  # Already a Dict[str, FileSnapshot]
+            
+            for current in current_snapshot_data:
+                path = current["path"]
+                if path not in saved_dict:
+                    # New file
+                    changed_paths.append(path)
+                elif saved_dict[path].sha256 != current["sha256"]:
+                    # Modified file
+                    changed_paths.append(path)
+            
+            return rebuild_changed(session_id, workspace, plan, changed_paths)
+    except Exception as e:
+        console.print(f"[red]Rebuild error: {e}[/red]")
+        console.print(f"[red]Error type: {type(e).__name__}[/red]")
+        import traceback
+        console.print(f"[red]Traceback: {traceback.format_exc()}[/red]")
+        # Return a minimal report on error
+        return RebuildReport(
+            session_id=session_id,
+            workspace="",
+            files_checked=0,
+            files_changed=[],
+            files_cascaded=[],
+            files_rewritten=[],
+            files_skipped=[],
+            rebuilt_at=datetime.now(timezone.utc).isoformat() + "Z"
+        )

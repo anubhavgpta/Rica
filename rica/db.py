@@ -205,9 +205,29 @@ class Database:
                 )
             """)
             
+            # Create agent_memory table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_memory (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id  TEXT NOT NULL,
+                    turn_index  INTEGER NOT NULL,
+                    role        TEXT NOT NULL,          -- 'user' | 'agent'
+                    content     TEXT NOT NULL,          -- the prompt or summary
+                    subtasks    TEXT,                   -- JSON array of SubTask dicts
+                    trace       TEXT,                   -- JSON array of SubTaskResult dicts
+                    created_at  TEXT NOT NULL
+                )
+            """)
+            
             # Create index for notes
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_notes_session ON notes(session_id)
+            """)
+            
+            # Create index for agent_memory
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_agent_memory_session
+                ON agent_memory(session_id, turn_index)
             """)
             
             conn.commit()
@@ -431,6 +451,20 @@ class Database:
             """, (debug_session_id,))
             columns = [desc[0] for desc in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    
+    def get_session(self, session_id: str) -> Optional[dict]:
+        """Get a session by ID."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                SELECT id, goal, language, status, created_at
+                FROM sessions
+                WHERE id = ?
+            """, (session_id,))
+            result = cursor.fetchone()
+            if result:
+                columns = [desc[0] for desc in cursor.description]
+                return dict(zip(columns, result))
+            return None
 
 
 def get_connection():
@@ -907,3 +941,8 @@ def get_note(note_id: int) -> dict | None:
         columns = [desc[0] for desc in cursor.description]
         return dict(zip(columns, result))
     return None
+
+
+def get_plan_for_session(session_id: str) -> Optional[dict]:
+    """Get the approved plan for a session."""
+    return db.get_plan_for_session(session_id)

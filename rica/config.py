@@ -18,6 +18,9 @@ PLANS_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = RICA_HOME / "rica.db"
 
+WORKSPACE_ROOT = RICA_HOME / "workspaces"
+WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
+
 # API Keys
 GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY")
 

@@ -1,0 +1,10 @@
+A Rica subtask failed. Suggest a modified version to retry.
+
+Failed subtask:
+{subtask}
+
+Failure detail:
+{detail}
+
+Return ONLY a single JSON object with the same "type" as the failed subtask,
+with adjustments that might resolve the failure. No preamble, no fences.

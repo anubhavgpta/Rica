@@ -235,41 +235,36 @@ def build_detail_panel(session_id: str) -> Panel:
     )
 
 
-def run_dashboard(refresh: int = 5) -> None:
+def run_dashboard(refresh: int = 5, session_id: Optional[str] = None, agent_mode: bool = False) -> None:
     """Main entry point for the interactive dashboard."""
     console = Console()
     
-    # Print banner
-    banner = r"""                   _..._               
-                .-'_..._''.            
-        .--.  .' .'      '.\           
-        |__| / .'                      
-.-,.--. .--.. '                        
-|  .-. ||  || |                 __     
-| |  | ||  || |              .:--.'.   
-| |  | ||  |. '             / |   \ |  
-| |  '- |  | \ '.          .`" __ | |  
-| |     |__|  '. `._____.-'/ .'.''| |  
-| |             `-.______ / / /   | |_ 
-|_|                      `  \\._,\ '/ 
-                             `--'  """
-    
-    console.print(banner, style="bold white")
-    console.print("Interactive Session Dashboard", style="dim")
-    console.print("─" * 80, style="dim")
-    
     # Threading setup
     stop_event = threading.Event()
-    current_session_id_ref = [None]  # Use list to make it mutable in closure
+    current_session_id_ref = [session_id]  # Use list to make it mutable in closure
     live = None
     render_thread = None
     
+    # Agent mode specific state
+    agent_orchestrator = None
+    agent_turns = []
+    watch_events = []
+    waiting_for_user = False
+    user_answer = None
+    
+    if agent_mode:
+        from .agent import AgentOrchestrator
+        agent_orchestrator = AgentOrchestrator(session_id, console)
+    
     def get_content():
-        current_session_id = current_session_id_ref[0]
-        if current_session_id:
-            return build_detail_panel(current_session_id)
+        if agent_mode and agent_orchestrator:
+            return build_agent_panel(agent_orchestrator, agent_turns, watch_events, waiting_for_user)
         else:
-            return build_session_table(limit=5)
+            current_session_id = current_session_id_ref[0]
+            if current_session_id:
+                return build_detail_panel(current_session_id)
+            else:
+                return build_session_table(limit=5)
     
     def render_loop(live_obj, get_content_func, refresh_interval):
         while not stop_event.is_set():
@@ -315,12 +310,61 @@ def run_dashboard(refresh: int = 5) -> None:
                 text = prompt(
                     "> ",
                     bottom_toolbar=HTML(
-                        "<b>rica dashboard</b>  |  "
+                        "<b>rica agent</b>" if agent_mode else "<b>rica dashboard</b>  |  "
                         "enter a session ID to inspect  |  "
                         "enter a goal to start a new session  |  "
                         "<b>ctrl-c</b> exit"
                     )
                 ).strip()
+                
+                if agent_mode:
+                    # Agent mode input handling
+                    if waiting_for_user:
+                        # Collect user answer for ask_user task
+                        user_answer = text
+                        waiting_for_user = False
+                        # Process the answer with the agent
+                        if agent_orchestrator and user_answer:
+                            result = agent_orchestrator.run_turn(user_answer)
+                            agent_turns.append(result)
+                            start_live_display()
+                        continue
+                    
+                    # Check for special commands
+                    if text.lower() in ("exit", "quit"):
+                        break
+                    elif text.lower() == "history":
+                        # Show agent history inline
+                        if agent_orchestrator.session_id:
+                            from .agent_memory import load_history
+                            history = load_history(agent_orchestrator.session_id, last_n=10)
+                            console.print("\n[Agent History]")
+                            for entry in history:
+                                console.print(f"  Turn {entry['turn_index']} [{entry['role']}]: {entry['content']}")
+                            console.print()
+                        start_live_display()
+                        continue
+                    
+                    # Regular agent prompt
+                    if agent_orchestrator:
+                        result = agent_orchestrator.run_turn(text)
+                        agent_turns.append(result)
+                        
+                        # Check if we're waiting for user input
+                        if result.final_status == "waiting_for_user":
+                            waiting_for_user = True
+                        
+                        # Update watch events
+                        new_events = agent_orchestrator.get_watch_events()
+                        watch_events.extend(new_events)
+                        
+                        start_live_display()
+                        continue
+                
+                # Skip regular dashboard logic in agent mode
+                if agent_mode:
+                    start_live_display()
+                    continue
                 
                 if not text:
                     start_live_display()
@@ -372,3 +416,62 @@ def run_dashboard(refresh: int = 5) -> None:
     finally:
         stop_live_display()
         console.print("[dim]exiting rica dashboard[/dim]")
+
+
+def build_agent_panel(agent_orchestrator, agent_turns, watch_events, waiting_for_user) -> Panel:
+    """Build the agent panel for agent mode dashboard."""
+    from .models import AgentTurnResult
+    
+    # Get current session info
+    session_id = agent_orchestrator.session_id or "no-session"
+    turn_index = agent_orchestrator.turn_index
+    
+    # Determine status
+    if waiting_for_user:
+        final_status = "waiting_for_user"
+    elif agent_turns:
+        final_status = agent_turns[-1].final_status
+    else:
+        final_status = "ready"
+    
+    # Build content lines
+    content_lines = [
+        f"Session: {session_id}   Turn: {turn_index}   Status: {final_status}",
+        "",
+    ]
+    
+    # Show latest user prompt and agent reply
+    if agent_turns:
+        latest_turn = agent_turns[-1]
+        content_lines.append(f"[user]  {latest_turn.user_prompt}")
+        content_lines.append(f"[agent] {latest_turn.agent_reply}")
+        
+        # Show subtask results
+        if latest_turn.subtasks:
+            content_lines.append("")
+            for i, (task, result) in enumerate(zip(latest_turn.subtasks, latest_turn.results)):
+                status_symbol = "✓" if result.passed else "✗"
+                content_lines.append(f"        {i+1}. {task.type}")
+                if task.goal:
+                    content_lines.append(f"           {task.goal[:50]}{'...' if len(task.goal) > 50 else ''}")
+                content_lines.append(f"           {status_symbol} {result.summary}")
+        
+        content_lines.append("")
+    
+    # Show watch events
+    recent_watch_events = watch_events[-5:]  # Show last 5 events
+    for event in recent_watch_events:
+        issues_count = len(event.issues)
+        content_lines.append(f"[watch] {event.path} changed — {issues_count} new issues")
+    
+    if waiting_for_user:
+        content_lines.append("")
+        content_lines.append("[?] Please provide input:")
+    
+    content = "\n".join(content_lines)
+    
+    return Panel(
+        content,
+        title="Agent",
+        border_style="dim"
+    )

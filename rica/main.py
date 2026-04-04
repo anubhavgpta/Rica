@@ -2123,3 +2123,84 @@ def note_delete(
         title="Note Deleted",
         border_style="dim"
     ))
+
+
+@app.command()
+def agent(
+    session_id: Optional[str] = typer.Argument(None, help="Session ID to load (optional)")
+) -> None:
+    """Launch Rica autonomous agent dashboard."""
+    from .dashboard import run_dashboard
+    console = get_console()
+    print_banner()
+    
+    # Launch dashboard with agent mode
+    run_dashboard(session_id=session_id, agent_mode=True)
+
+
+@app.command("agent-history")
+def agent_history(
+    session_id: str = typer.Argument(..., help="Session ID"),
+    last: int = typer.Option(20, "--last", help="Number of recent turns to show")
+) -> None:
+    """Show agent execution history for a session."""
+    from .agent_memory import load_history
+    console = get_console()
+    print_banner()
+    
+    # Validate session exists
+    sessions = db.list_sessions()
+    session = next((s for s in sessions if s["id"] == session_id), None)
+    if not session:
+        console.print(f"[red]Session not found: {session_id}[/red]")
+        raise typer.Exit(1)
+    
+    # Load agent history
+    history = load_history(session_id, last_n=last)
+    
+    if not history:
+        console.print(Panel(
+            f"No agent history for session {session_id}",
+            border_style="dim"
+        ))
+        return
+    
+    # Create table
+    table = Table(title=f"Agent History — {session_id} (last {len(history)} turns)", border_style="dim")
+    table.add_column("Turn", style="cyan")
+    table.add_column("Role", style="white")
+    table.add_column("Content", style="green")
+    table.add_column("Subtasks", style="blue")
+    table.add_column("Result", style="yellow")
+    
+    for entry in history:
+        # Summarize subtasks and results
+        subtasks = entry.get("subtasks", [])
+        trace = entry.get("trace", [])
+        
+        if subtasks:
+            subtask_summary = ", ".join(f"{t['type']}" for t in subtasks)
+        else:
+            subtask_summary = "None"
+        
+        if trace:
+            passed = sum(1 for r in trace if r.get("passed", False))
+            total = len(trace)
+            result_summary = f"{passed}/{total} passed"
+        else:
+            result_summary = "No results"
+        
+        # Truncate content for display
+        content = entry["content"]
+        if len(content) > 50:
+            content = content[:47] + "..."
+        
+        table.add_row(
+            str(entry["turn_index"]),
+            entry["role"],
+            content,
+            subtask_summary,
+            result_summary
+        )
+    
+    console.print(table)
