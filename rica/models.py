@@ -264,6 +264,7 @@ class AgentParallelConfig(BaseModel):
         default=True,
         description="If False, fall back to sequential execution regardless of DAG.",
     )
+    swebench_mode: bool = False
 
 
 class WatchEvent(BaseModel):

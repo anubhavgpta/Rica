@@ -51,3 +51,14 @@ User prompt: {prompt}
 
 Project context:
 {context}
+
+{{#if swebench_mode}}
+SWE-BENCH MODE — STRICT CONSTRAINTS (override all prior instructions where they conflict):
+- You are operating on an existing codebase. Do not create new files unless the task explicitly requires it.
+- Do not rewrite files wholesale. All edits must be minimal and surgical.
+- Every subtask that modifies a file must specify exact line ranges to change.
+- Do not make assumptions about missing infrastructure. Work only with what exists.
+- Prefer single-file, single-function edits. If a fix touches more than three files, re-examine whether it is truly minimal.
+- Do not add dependencies, scaffolding, configuration, or tooling unless the issue explicitly requires it.
+- Output only what is necessary to resolve the described fault. Nothing more.
+{{/if}}

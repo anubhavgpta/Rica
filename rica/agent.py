@@ -60,7 +60,10 @@ class AgentOrchestrator:
         context = self._build_project_context()
         
         # Decompose user prompt into subtasks
-        self.subtasks = self.task_decomposer.decompose(user_prompt, context)
+        self.subtasks = self.task_decomposer.decompose(
+            user_prompt, context,
+            swebench_mode=self.parallel_config.swebench_mode,
+        )
         
         # Build execution waves
         try:

@@ -2133,15 +2133,16 @@ def note_delete(
 
 @app.command()
 def agent(
-    session_id: Optional[str] = typer.Argument(None, help="Session ID to load (optional)")
+    session_id: Optional[str] = typer.Argument(None, help="Session ID to load (optional)"),
+    swebench: bool = typer.Option(False, "--swebench", help="Enable SWE-bench mode: minimal edits only, no greenfield assumptions."),
 ) -> None:
     """Launch Rica autonomous agent dashboard."""
     from .dashboard import run_dashboard
     console = get_console()
     print_banner()
-    
+
     # Launch dashboard with agent mode
-    run_dashboard(session_id=session_id, agent_mode=True)
+    run_dashboard(session_id=session_id, agent_mode=True, swebench_mode=swebench)
 
 
 @app.command("agent-history")

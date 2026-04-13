@@ -235,7 +235,7 @@ def build_detail_panel(session_id: str) -> Panel:
     )
 
 
-def run_dashboard(refresh: int = 5, session_id: Optional[str] = None, agent_mode: bool = False) -> None:
+def run_dashboard(refresh: int = 5, session_id: Optional[str] = None, agent_mode: bool = False, swebench_mode: bool = False) -> None:
     """Main entry point for the interactive dashboard."""
     console = Console()
     
@@ -254,7 +254,12 @@ def run_dashboard(refresh: int = 5, session_id: Optional[str] = None, agent_mode
     
     if agent_mode:
         from .agent import AgentOrchestrator
-        agent_orchestrator = AgentOrchestrator(session_id, console)
+        from .models import AgentParallelConfig
+        agent_orchestrator = AgentOrchestrator(
+            session_id,
+            parallel_config=AgentParallelConfig(swebench_mode=swebench_mode),
+            console=console,
+        )
     
     def get_content():
         if agent_mode and agent_orchestrator:

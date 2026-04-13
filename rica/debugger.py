@@ -121,16 +121,18 @@ def _attempt_patch_fix(
             f"{i + 1}: {lines[i]}" for i in range(start_line - 1, end_line)
         )
 
+        from .prompts import render_prompt
         prompt_path = Path(__file__).parent / "prompts" / "patcher.txt"
         template = prompt_path.read_text().strip()
 
-        prompt = template
-        prompt = prompt.replace("{{filepath}}", str(file_path))
-        prompt = prompt.replace("{{start_line}}", str(start_line))
-        prompt = prompt.replace("{{end_line}}", str(end_line))
-        prompt = prompt.replace("{{original_lines}}", original_snippet)
-        prompt = prompt.replace("{{error_text}}", error.raw_stderr[:2000])
-        prompt = prompt.replace("{{fault_site}}", f"{file_path}:{localized_line}")
+        prompt = render_prompt(template, {
+            "filepath": str(file_path),
+            "start_line": str(start_line),
+            "end_line": str(end_line),
+            "original_lines": original_snippet,
+            "error_text": error.raw_stderr[:2000],
+            "fault_site": f"{file_path}:{localized_line}",
+        })
 
         raw = llm.generate(
             system_prompt="",
@@ -161,7 +163,8 @@ def generate_fix(
     plan: BuildPlan,
     console: Console,
     *,
-    session_id: str | None = None
+    session_id: str | None = None,
+    swebench_mode: bool = False,
 ) -> str:
     """Generate a fix for a given error."""
     # Read current content of the file
@@ -231,23 +234,46 @@ def generate_fix(
         )
         localized_block = f"\nLocalized fault sites (ranked):\n{loc_lines}\n"
 
-    # Attempt patch-based fix when the top hit is a stack-trace line in this file
-    if localized:
-        top_file, top_line, top_reason = localized[0]
-        if top_reason == "stack_trace" and top_line > 0 and top_file == file_path:
-            patch_result = _attempt_patch_fix(
-                error=error,
-                file_path=file_path,
-                localized_line=top_line,
-                session_id=session_id,
-                console=console,
-            )
-            if patch_result is not None and patch_result.success and not patch_result.rolled_back:
-                try:
-                    return file_path.read_text(encoding="utf-8")
-                except Exception:
-                    pass
-            # Failed or rolled back — fall through to whole-file rewrite
+    if swebench_mode:
+        # SWE-bench mode: patcher is the default path for all fixes.
+        swebench_line = (
+            localized[0][1] if (localized and localized[0][1] > 0) else 1
+        )
+        patch_result = _attempt_patch_fix(
+            error=error,
+            file_path=file_path,
+            localized_line=swebench_line,
+            session_id=session_id,
+            console=console,
+        )
+        if patch_result is not None and patch_result.success and not patch_result.rolled_back:
+            try:
+                return file_path.read_text(encoding="utf-8")
+            except Exception:
+                pass
+            return current_content
+        # Fall back to whole-file rewrite ONLY when explicitly rolled back AND no localizations.
+        if not (patch_result is not None and patch_result.rolled_back and not localized):
+            return current_content
+        # Else: fall through to whole-file rewrite
+    else:
+        # L22 routing: patch only when top localized hit is a stack-trace line in this file.
+        if localized:
+            top_file, top_line, top_reason = localized[0]
+            if top_reason == "stack_trace" and top_line > 0 and top_file == file_path:
+                patch_result = _attempt_patch_fix(
+                    error=error,
+                    file_path=file_path,
+                    localized_line=top_line,
+                    session_id=session_id,
+                    console=console,
+                )
+                if patch_result is not None and patch_result.success and not patch_result.rolled_back:
+                    try:
+                        return file_path.read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+                # Failed or rolled back — fall through to whole-file rewrite
 
     # Build user prompt
     user_prompt = f"""BuildPlan

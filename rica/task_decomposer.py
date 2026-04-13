@@ -82,10 +82,17 @@ with adjustments that might resolve the failure. No preamble, no fences."""
         # Remove None/empty values for compactness
         return json.dumps({k: v for k, v in context.items() if v is not None and v != ""})
     
-    def decompose(self, user_prompt: str, project_context: ProjectContext) -> list[SubTask]:
+    def decompose(
+        self,
+        user_prompt: str,
+        project_context: ProjectContext,
+        swebench_mode: bool = False,
+    ) -> list[SubTask]:
         """Decompose user prompt into ordered subtasks."""
+        from .prompts import render_prompt
         context_str = self._build_context(project_context)
-        full_prompt = self._decomposer_prompt.format(
+        rendered = render_prompt(self._decomposer_prompt, {"swebench_mode": swebench_mode})
+        full_prompt = rendered.format(
             context=context_str,
             prompt=user_prompt
         )
