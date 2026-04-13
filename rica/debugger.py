@@ -12,7 +12,8 @@ from .codegen import _strip_fences
 from .config import PLANS_DIR
 from .llm import llm
 from .localizer import localize
-from .models import BuildPlan, ErrorClass
+from .models import BuildPlan, EditSpec, ErrorClass
+from .patcher import patch_file
 
 
 def classify_error(stdout: str, stderr: str, language: str, timed_out: bool) -> ErrorClass:
@@ -95,6 +96,64 @@ def classify_error(stdout: str, stderr: str, language: str, timed_out: bool) -> 
     )
 
 
+def _attempt_patch_fix(
+    error: ErrorClass,
+    file_path: Path,
+    localized_line: int,
+    session_id: str | None,
+    console: Console,
+):
+    """
+    Try to fix a localised fault via targeted patch rather than whole-file rewrite.
+    Returns a PatchResult on success/failure, or None if the attempt cannot proceed.
+    """
+    try:
+        content = file_path.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        total_lines = len(lines)
+        if total_lines == 0:
+            return None
+
+        start_line = max(1, localized_line - 2)
+        end_line = min(total_lines, localized_line + 2)
+
+        original_snippet = "\n".join(
+            f"{i + 1}: {lines[i]}" for i in range(start_line - 1, end_line)
+        )
+
+        prompt_path = Path(__file__).parent / "prompts" / "patcher.txt"
+        template = prompt_path.read_text().strip()
+
+        prompt = template
+        prompt = prompt.replace("{{filepath}}", str(file_path))
+        prompt = prompt.replace("{{start_line}}", str(start_line))
+        prompt = prompt.replace("{{end_line}}", str(end_line))
+        prompt = prompt.replace("{{original_lines}}", original_snippet)
+        prompt = prompt.replace("{{error_text}}", error.raw_stderr[:2000])
+        prompt = prompt.replace("{{fault_site}}", f"{file_path}:{localized_line}")
+
+        raw = llm.generate(
+            system_prompt="",
+            user_prompt=prompt,
+            layer="L22",
+            call_type="patch",
+            session_id=session_id,
+        )
+
+        replacement_lines = raw.splitlines()
+        edit_spec = EditSpec(
+            filepath=file_path,
+            start_line=start_line,
+            end_line=end_line,
+            replacement_lines=replacement_lines,
+            description=f"Patch fix for {error.error_summary[:80]}",
+        )
+        return patch_file(file_path, edit_spec, validate_cmd=None)
+
+    except Exception:
+        return None
+
+
 def generate_fix(
     error: ErrorClass,
     file_path: Path,
@@ -167,10 +226,28 @@ def generate_fix(
     localized = localize(error_output=error.raw_stderr, repo_path=workspace)
     localized_block = ""
     if localized:
-        lines = "\n".join(
+        loc_lines = "\n".join(
             f"{p}:{ln} — {reason}" for p, ln, reason in localized
         )
-        localized_block = f"\nLocalized fault sites (ranked):\n{lines}\n"
+        localized_block = f"\nLocalized fault sites (ranked):\n{loc_lines}\n"
+
+    # Attempt patch-based fix when the top hit is a stack-trace line in this file
+    if localized:
+        top_file, top_line, top_reason = localized[0]
+        if top_reason == "stack_trace" and top_line > 0 and top_file == file_path:
+            patch_result = _attempt_patch_fix(
+                error=error,
+                file_path=file_path,
+                localized_line=top_line,
+                session_id=session_id,
+                console=console,
+            )
+            if patch_result is not None and patch_result.success and not patch_result.rolled_back:
+                try:
+                    return file_path.read_text(encoding="utf-8")
+                except Exception:
+                    pass
+            # Failed or rolled back — fall through to whole-file rewrite
 
     # Build user prompt
     user_prompt = f"""BuildPlan

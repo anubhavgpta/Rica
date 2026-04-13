@@ -271,3 +271,26 @@ class WatchEvent(BaseModel):
     path: str
     issues: list[dict]  # List of issues found by watcher
     timestamp: str
+
+
+class EditSpec(BaseModel):
+    """Describes a targeted edit to a single file."""
+    filepath: Path
+    start_line: int          # 1-indexed, inclusive
+    end_line: int            # 1-indexed, inclusive
+    replacement_lines: list[str]   # lines to substitute for [start_line, end_line]
+    description: str = ""
+
+
+class ApplyResult(BaseModel):
+    success: bool
+    files_patched: list[Path]
+    errors: list[str]
+
+
+class PatchResult(BaseModel):
+    success: bool
+    diff_applied: str        # the unified diff that was applied (or attempted)
+    validation_exit_code: int | None = None  # None if no validate_cmd
+    rolled_back: bool = False
+    error: str = ""
