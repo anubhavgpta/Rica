@@ -11,6 +11,7 @@ from rich.console import Console
 from .codegen import _strip_fences
 from .config import PLANS_DIR
 from .llm import llm
+from .localizer import localize
 from .models import BuildPlan, ErrorClass
 
 
@@ -162,6 +163,15 @@ def generate_fix(
         console.print(f"[red]Error loading debugger prompt: {e}[/red]")
         return current_content
     
+    # Localize fault sites
+    localized = localize(error_output=error.raw_stderr, repo_path=workspace)
+    localized_block = ""
+    if localized:
+        lines = "\n".join(
+            f"{p}:{ln} — {reason}" for p, ln, reason in localized
+        )
+        localized_block = f"\nLocalized fault sites (ranked):\n{lines}\n"
+
     # Build user prompt
     user_prompt = f"""BuildPlan
 {plan.model_dump_json(indent=2)}
@@ -173,7 +183,7 @@ Raw stderr:
 File to Fix: {file_path.name}
 {current_content}
 Other Workspace Files (for context)
-{context_block}
+{context_block}{localized_block}
 Return ONLY the complete fixed content of {file_path.name}."""
     
     # Generate fix
